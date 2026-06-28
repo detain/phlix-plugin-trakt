@@ -43,6 +43,33 @@ class TraktApi
     }
 
     /**
+     * Build the mandatory Trakt API headers for every request.
+     *
+     * Trakt requires `trakt-api-version: 2` and `trakt-api-key: {client_id}`
+     * on every request. When an access token is supplied, an
+     * `Authorization: Bearer <token>` header is merged in as well.
+     *
+     * @param string|null $accessToken OAuth access token, or null/empty for unauthenticated calls
+     *
+     * @return array<string, string> Header map for the HTTP client
+     *
+     * @since 0.14.0
+     */
+    private function apiHeaders(?string $accessToken = null): array
+    {
+        $headers = [
+            'trakt-api-version' => '2',
+            'trakt-api-key' => $this->clientId,
+        ];
+
+        if ($accessToken !== null && $accessToken !== '') {
+            $headers['Authorization'] = 'Bearer ' . $accessToken;
+        }
+
+        return $headers;
+    }
+
+    /**
      * Build the OAuth2 PKCE authorization URL.
      *
      * @param string $state CSRF protection state token
@@ -89,7 +116,7 @@ class TraktApi
             'code_verifier' => $codeVerifier,
         ];
 
-        $response = $this->http->post(self::BASE_URL . '/oauth/token', $params);
+        $response = $this->http->post(self::BASE_URL . '/oauth/token', $params, $this->apiHeaders());
 
         if (isset($response['error'])) {
             $message = is_string($response['error_description'] ?? null)
@@ -125,7 +152,7 @@ class TraktApi
             'grant_type' => 'refresh_token',
         ];
 
-        $response = $this->http->post(self::BASE_URL . '/oauth/token', $params);
+        $response = $this->http->post(self::BASE_URL . '/oauth/token', $params, $this->apiHeaders());
 
         if (isset($response['error'])) {
             $message = is_string($response['error_description'] ?? null)
@@ -251,7 +278,7 @@ class TraktApi
             $response = $this->http->post(
                 self::BASE_URL . '/scrobble/' . ($movie !== null ? 'movie' : 'episode'),
                 $payload,
-                ['Authorization' => 'Bearer ' . $accessToken]
+                $this->apiHeaders($accessToken)
             );
 
             $this->logger->debug('Trakt scrobble response', [
@@ -286,11 +313,6 @@ class TraktApi
      */
     public function getWatchedHistory(string $username, int $page = 1, int $limit = 100, string $accessToken = ''): array
     {
-        $headers = [];
-        if ($accessToken !== '') {
-            $headers['Authorization'] = 'Bearer ' . $accessToken;
-        }
-
         $params = [
             'page' => $page,
             'limit' => min($limit, 1000),
@@ -299,7 +321,7 @@ class TraktApi
         $response = $this->http->get(
             self::BASE_URL . '/users/' . urlencode($username) . '/watched',
             $params,
-            $headers
+            $this->apiHeaders($accessToken)
         );
 
         $this->logger->debug('Trakt watched history response', [
@@ -359,7 +381,7 @@ class TraktApi
         $response = $this->http->post(
             self::BASE_URL . '/sync/history',
             $payload,
-            ['Authorization' => 'Bearer ' . $accessToken]
+            $this->apiHeaders($accessToken)
         );
 
         $this->logger->debug('Trakt add to history response', [

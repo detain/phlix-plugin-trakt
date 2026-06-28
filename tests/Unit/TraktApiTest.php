@@ -100,6 +100,120 @@ final class TraktApiTest extends TestCase
         $this->assertSame('GET', $http->lastMethod);
         $this->assertStringContainsString('/users/testuser/watched', $http->lastUrl);
     }
+
+    public function testScrobbleSendsMandatoryTraktHeaders(): void
+    {
+        $http = new MockHttpClient([['action' => 'start', 'watched_at' => '2026-06-28T00:00:00Z']]);
+        $api = new TraktApi($http, self::CLIENT_ID, self::CLIENT_SECRET, new NullLogger());
+
+        $item = $this->makeMovieItem();
+        $api->scrobbleStart($item, 0, 'scrobble-token');
+
+        $this->assertSame('2', $http->lastHeaders['trakt-api-version'] ?? null);
+        $this->assertSame(self::CLIENT_ID, $http->lastHeaders['trakt-api-key'] ?? null);
+        $this->assertSame('Bearer scrobble-token', $http->lastHeaders['Authorization'] ?? null);
+    }
+
+    public function testGetWatchedHistorySendsMandatoryTraktHeaders(): void
+    {
+        $http = new MockHttpClient([[]]);
+        $api = new TraktApi($http, self::CLIENT_ID, self::CLIENT_SECRET, new NullLogger());
+
+        $api->getWatchedHistory('testuser', 1, 100, 'history-token');
+
+        $this->assertSame('2', $http->lastHeaders['trakt-api-version'] ?? null);
+        $this->assertSame(self::CLIENT_ID, $http->lastHeaders['trakt-api-key'] ?? null);
+        $this->assertSame('Bearer history-token', $http->lastHeaders['Authorization'] ?? null);
+    }
+
+    public function testRefreshAccessTokenSendsMandatoryTraktHeaders(): void
+    {
+        $http = new MockHttpClient([
+            ['access_token' => 'a', 'refresh_token' => 'b', 'expires_in' => 3600]
+        ]);
+        $api = new TraktApi($http, self::CLIENT_ID, self::CLIENT_SECRET, new NullLogger());
+
+        $api->refreshAccessToken('old-refresh-token');
+
+        $this->assertSame('2', $http->lastHeaders['trakt-api-version'] ?? null);
+        $this->assertSame(self::CLIENT_ID, $http->lastHeaders['trakt-api-key'] ?? null);
+        // No access token is available during a refresh — Authorization must be absent.
+        $this->assertArrayNotHasKey('Authorization', $http->lastHeaders);
+    }
+
+    public function testExchangeCodeSendsMandatoryTraktHeaders(): void
+    {
+        $http = new MockHttpClient([
+            ['access_token' => 'a', 'refresh_token' => 'b', 'expires_in' => 3600]
+        ]);
+        $api = new TraktApi($http, self::CLIENT_ID, self::CLIENT_SECRET, new NullLogger());
+
+        $api->exchangeCode('auth-code', 'code-verifier');
+
+        $this->assertSame('2', $http->lastHeaders['trakt-api-version'] ?? null);
+        $this->assertSame(self::CLIENT_ID, $http->lastHeaders['trakt-api-key'] ?? null);
+        // The token-exchange call has no token yet — Authorization must be absent.
+        $this->assertArrayNotHasKey('Authorization', $http->lastHeaders);
+    }
+
+    public function testAddToHistorySendsMandatoryTraktHeaders(): void
+    {
+        $http = new MockHttpClient([['added' => ['movies' => 1]]]);
+        $api = new TraktApi($http, self::CLIENT_ID, self::CLIENT_SECRET, new NullLogger());
+
+        $item = $this->makeMovieItem();
+        $api->addToHistory($item, new \DateTimeImmutable('2026-06-28T00:00:00Z'), 'history-token');
+
+        $this->assertSame('2', $http->lastHeaders['trakt-api-version'] ?? null);
+        $this->assertSame(self::CLIENT_ID, $http->lastHeaders['trakt-api-key'] ?? null);
+        $this->assertSame('Bearer history-token', $http->lastHeaders['Authorization'] ?? null);
+    }
+
+    /**
+     * Build a minimal movie MediaItem fixture for scrobble/history calls.
+     *
+     * Phlix\Media\Library\MediaItem is supplied by the host server and is not
+     * part of this plugin's dependency closure; a matching stub is registered
+     * below when the real class is unavailable.
+     */
+    private function makeMovieItem(): \Phlix\Media\Library\MediaItem
+    {
+        return new \Phlix\Media\Library\MediaItem(
+            id: 'mi-1',
+            name: 'Test Movie',
+            type: 'movie',
+            path: '/movies/test.mkv',
+            metadata: ['trakt_id' => 1, 'imdb_id' => 'tt0000001', 'tmdb_id' => 42],
+        );
+    }
+}
+
+/**
+ * Minimal stand-in for the host-supplied Phlix\Media\Library\MediaItem.
+ *
+ * The real class lives in the Phlix server and is not part of this plugin's
+ * dependency closure, so the header tests register this stub under the
+ * canonical FQCN when the real class is unavailable. Only the public
+ * properties TraktApi reads (type/metadata/name) plus the named-argument
+ * constructor signature matter here.
+ */
+final class MediaItemStub
+{
+    /**
+     * @param array<string, mixed> $metadata
+     */
+    public function __construct(
+        public string $id,
+        public string $name,
+        public string $type,
+        public string $path,
+        public array $metadata = [],
+    ) {
+    }
+}
+
+if (!class_exists(\Phlix\Media\Library\MediaItem::class)) {
+    \class_alias(MediaItemStub::class, \Phlix\Media\Library\MediaItem::class);
 }
 
 final class MockHttpClient implements HttpClientInterface
