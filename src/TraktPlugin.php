@@ -28,7 +28,11 @@ use Psr\Log\NullLogger;
  * {@see TraktPlugin::ensureFreshToken()}, which refreshes an expired access
  * token, rotates the stored access/refresh tokens, recomputes `expires_at`,
  * and persists the new tokens through the optional {@see TraktSettingsRepository}.
- * A 401 raised mid-scrobble triggers a single refresh-then-retry.
+ * A 401 raised mid-scrobble triggers a single refresh-then-retry. Because Trakt
+ * rotates the refresh token on every exchange, the refresh is guarded by a
+ * per-account single-flight gate so two concurrent playback events can never
+ * both POST the same refresh token (which would invalidate the account); the
+ * second caller awaits the first and reuses the freshly-rotated token.
  *
  * @package Phlix\Plugins\Scrobbler\Trakt
  * @since 0.14.0
@@ -50,6 +54,37 @@ final class TraktPlugin implements LifecycleInterface
      * provide one, in which case persistence is a no-op (with a warning).
      */
     private ?TraktSettingsRepository $settingsRepository = null;
+
+    /**
+     * Single-flight gate around the OAuth refresh (step B4).
+     *
+     * Trakt ROTATES the refresh token on every `/oauth/token` exchange, so two
+     * concurrent playback events that both observe an expired token and both
+     * POST the SAME refresh token would invalidate the account (the second
+     * exchange is rejected and logs the user out). This guard ensures only ONE
+     * refresh is ever in flight per plugin instance (= per account): the first
+     * caller performs the refresh while concurrent callers AWAIT its result and
+     * then re-check {@see TraktSettings::isTokenExpired()} (double-checked
+     * locking), using the freshly-rotated token instead of refreshing again.
+     *
+     * Implemented coroutine-safely: when running inside a Swoole coroutine the
+     * await is a {@see \Swoole\Coroutine\Channel} pop (it YIELDS — never a
+     * blocking sleep or busy-wait); outside a coroutine (e.g. unit tests, CLI)
+     * the same flag serialises the in-process call path. The guard is keyed by
+     * this instance because each plugin instance is scoped to one account's
+     * settings.
+     */
+    private bool $refreshInProgress = false;
+
+    /**
+     * Channel used as the coroutine await primitive for the single-flight gate.
+     * Lazily created only when actually running inside a coroutine; it carries
+     * no payload (signalling only) and is recreated per refresh cycle so a
+     * failed refresh never wedges the next one.
+     *
+     * @var \Swoole\Coroutine\Channel|null
+     */
+    private $refreshLock = null;
 
     /** Disables all scrobbling and sync when false. */
     private bool $enabled = false;
@@ -378,12 +413,21 @@ final class TraktPlugin implements LifecycleInterface
     /**
      * Ensure the access token is fresh before an authenticated call.
      *
-     * Single entrypoint for the OAuth refresh so a future single-flight lock
-     * (step B4) can wrap exactly this method. When the access token is expired
+     * Single entrypoint for the OAuth refresh, wrapped by the per-account
+     * single-flight gate (step B4). When the access token is expired
      * (per {@see TraktSettings::isTokenExpired()}) it requests a new token pair
      * from Trakt, rebuilds {@see TraktSettings} with the rotated
      * access/refresh tokens and a recomputed `expires_at` (= time() + expires_in),
      * assigns it, and persists it via {@see TraktPlugin::persistSettings()}.
+     *
+     * Concurrency: Trakt rotates the refresh token on every exchange, so two
+     * concurrent callers must NOT both refresh with the same refresh token.
+     * The FIRST caller acquires the single-flight gate and performs the
+     * refresh; concurrent callers AWAIT it (yielding inside a coroutine) and
+     * then re-evaluate expiry (double-checked locking) so they reuse the
+     * freshly-rotated token instead of issuing a second, account-invalidating
+     * refresh. The gate is always released (try/finally) — including when the
+     * refresh throws — so a failed refresh never wedges future refreshes.
      *
      * @return bool True when a valid (fresh or freshly-refreshed) token is
      *              available; false when a refresh was needed but failed.
@@ -396,8 +440,64 @@ final class TraktPlugin implements LifecycleInterface
             return false;
         }
 
+        // Fast path: token already valid — no refresh, no lock needed.
         if (!$this->settings->isTokenExpired()) {
             return true;
+        }
+
+        // Another caller is already refreshing: await it, then re-check.
+        if ($this->refreshInProgress) {
+            $this->awaitInFlightRefresh();
+
+            // Double-checked locking: the in-flight refresh may have already
+            // rotated the token. If so, reuse it instead of refreshing again —
+            // this is the path that prevents a second account-invalidating
+            // exchange of the same (now-stale) refresh token.
+            if (!$this->settings->isTokenExpired()) {
+                return true;
+            }
+
+            // Still expired. If a refresh is STILL in flight here, we were
+            // re-entered synchronously (no coroutine to yield to) while the
+            // owner is mid-exchange — do NOT start a nested refresh (that would
+            // be the very double-refresh this gate exists to prevent). Report
+            // failure; the owner will rotate the token momentarily.
+            if ($this->refreshInProgress) {
+                return false;
+            }
+            // The in-flight refresh has completed but failed (token still
+            // expired, gate released). Fall through and attempt our own refresh.
+        }
+
+        // We are the single-flight owner for this refresh cycle.
+        $this->beginRefresh();
+        try {
+            // Re-check under the gate in case a refresh completed between our
+            // initial expiry check and acquiring ownership.
+            if (!$this->settings->isTokenExpired()) {
+                return true;
+            }
+
+            return $this->performTokenRefresh();
+        } finally {
+            $this->endRefresh();
+        }
+    }
+
+    /**
+     * Perform the actual OAuth refresh (no concurrency control of its own).
+     *
+     * This is the single refresh implementation wrapped by
+     * {@see TraktPlugin::ensureFreshToken()}'s single-flight gate. It assumes
+     * the caller has already confirmed the token is expired.
+     *
+     * @return bool True when the tokens were rotated; false when no refresh
+     *              token is available or the exchange failed.
+     */
+    private function performTokenRefresh(): bool
+    {
+        if ($this->api === null) {
+            return false;
         }
 
         $refreshToken = $this->settings->refreshToken;
@@ -420,6 +520,83 @@ final class TraktPlugin implements LifecycleInterface
         $this->logger?->info('Trakt: access token refreshed');
 
         return true;
+    }
+
+    /**
+     * Mark a refresh as in flight and arm the coroutine await primitive.
+     *
+     * Inside a Swoole coroutine a fresh, payload-free {@see \Swoole\Coroutine\Channel}
+     * is created so concurrent coroutines can block (yield) on it until this
+     * refresh completes. Outside a coroutine (unit tests, CLI) only the boolean
+     * flag is set — there is no concurrency to await.
+     *
+     * @return void
+     */
+    private function beginRefresh(): void
+    {
+        $this->refreshInProgress = true;
+        $this->refreshLock = $this->inCoroutine() ? new \Swoole\Coroutine\Channel(1) : null;
+    }
+
+    /**
+     * Clear the in-flight flag and wake any awaiting coroutines.
+     *
+     * Always invoked from a `finally`, so a refresh that throws still releases
+     * the gate. Closing the channel pushes EOF to every blocked `pop()` so each
+     * awaiting coroutine resumes and re-checks expiry. The channel is then
+     * dropped so the next refresh cycle starts from a clean primitive.
+     *
+     * @return void
+     */
+    private function endRefresh(): void
+    {
+        $this->refreshInProgress = false;
+
+        $lock = $this->refreshLock;
+        $this->refreshLock = null;
+        if ($lock !== null) {
+            // close() wakes all blocked pop()s with `false` (channel closed).
+            $lock->close();
+        }
+    }
+
+    /**
+     * Await the currently in-flight refresh without busy-waiting.
+     *
+     * Inside a coroutine this pops the signalling channel, which YIELDS until
+     * {@see TraktPlugin::endRefresh()} closes it (cooperative; never a blocking
+     * sleep). The pop returns `false` on close — we only need the wake, not a
+     * payload. Outside a coroutine (or if the owner already finished and
+     * dropped the channel) there is nothing to await and we return immediately;
+     * the caller's double-check then observes the rotated token.
+     *
+     * @return void
+     */
+    private function awaitInFlightRefresh(): void
+    {
+        $lock = $this->refreshLock;
+        if ($lock === null || !$this->inCoroutine()) {
+            return;
+        }
+
+        // Blocks (yields) until the owner closes the channel; the pop result is
+        // intentionally ignored — closing is the wake signal.
+        $lock->pop();
+    }
+
+    /**
+     * Whether the current execution context is a Swoole coroutine.
+     *
+     * Guards every use of the coroutine await primitive so the gate degrades to
+     * a plain in-process flag under PHPUnit/CLI (where Channel pop/push would
+     * fatal outside a coroutine).
+     *
+     * @return bool
+     */
+    private function inCoroutine(): bool
+    {
+        return class_exists(\Swoole\Coroutine::class)
+            && \Swoole\Coroutine::getCid() > 0;
     }
 
     /**
