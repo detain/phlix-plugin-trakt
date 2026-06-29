@@ -897,3 +897,50 @@ final class FakeItemRepository
 if (!class_exists(\Phlix\Media\Library\ItemRepository::class)) {
     \class_alias(FakeItemRepository::class, \Phlix\Media\Library\ItemRepository::class);
 }
+
+// MediaItemStub is also defined in TraktApiTest.php - only declare if not already loaded.
+if (!class_exists(MediaItemStub::class)) {
+    /**
+     * Minimal stand-in for the host-supplied Phlix\Media\Library\MediaItem.
+     *
+     * The real class lives in the Phlix server and is not part of this plugin's
+     * dependency closure, so tests register this stub under the canonical FQCN
+     * when the real class is unavailable.
+     */
+    final class MediaItemStub
+    {
+        /**
+         * @param array<string, mixed> $metadata
+         */
+        public function __construct(
+            public string $id,
+            public string $name,
+            public string $type,
+            public string $path,
+            public array $metadata = [],
+        ) {
+        }
+
+        /**
+         * Build a stub MediaItem from a DB-style row.
+         *
+         * @param array<string, mixed> $row
+         */
+        public static function fromRow(array $row): self
+        {
+            $metadata = is_array($row['metadata'] ?? null) ? $row['metadata'] : [];
+
+            return new self(
+                id: is_string($row['id'] ?? null) ? $row['id'] : '',
+                name: is_string($row['name'] ?? null) ? $row['name'] : '',
+                type: is_string($row['type'] ?? null) ? $row['type'] : 'movie',
+                path: is_string($row['path'] ?? null) ? $row['path'] : '',
+                metadata: $metadata,
+            );
+        }
+    }
+}
+
+if (!class_exists(\Phlix\Media\Library\MediaItem::class)) {
+    \class_alias(MediaItemStub::class, \Phlix\Media\Library\MediaItem::class);
+}
