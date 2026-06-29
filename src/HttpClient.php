@@ -73,6 +73,12 @@ class HttpClient implements HttpClientInterface
             CURLOPT_RETURNTRANSFER => true,
             CURLOPT_TIMEOUT => $this->timeout,
             CURLOPT_HTTPHEADER => $requestHeaders,
+            // TLS verification - explicitly enabled for security
+            CURLOPT_SSL_VERIFYPEER => true,
+            CURLOPT_SSL_VERIFYHOST => 2,
+            // HTTPS-only redirects - prevent redirect to insecure protocols
+            CURLOPT_REDIR_PROTOCOLS => CURLPROTO_HTTPS,
+            CURLOPT_PROTOCOLS => CURLPROTO_HTTPS,
         ]);
 
         if ($method === 'POST') {
