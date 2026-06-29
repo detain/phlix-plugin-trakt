@@ -210,6 +210,28 @@ final class MediaItemStub
         public array $metadata = [],
     ) {
     }
+
+    /**
+     * Build a stub MediaItem from a DB-style row.
+     *
+     * Mirrors the host MediaItem::fromRow() factory so plugin code that
+     * resolves an item via the repository (e.g. TraktPlugin::findMediaItem())
+     * works against this shared canonical stub. Unused by the API tests.
+     *
+     * @param array<string, mixed> $row
+     */
+    public static function fromRow(array $row): self
+    {
+        $metadata = is_array($row['metadata'] ?? null) ? $row['metadata'] : [];
+
+        return new self(
+            id: is_string($row['id'] ?? null) ? $row['id'] : '',
+            name: is_string($row['name'] ?? null) ? $row['name'] : '',
+            type: is_string($row['type'] ?? null) ? $row['type'] : 'movie',
+            path: is_string($row['path'] ?? null) ? $row['path'] : '',
+            metadata: $metadata,
+        );
+    }
 }
 
 if (!class_exists(\Phlix\Media\Library\MediaItem::class)) {
