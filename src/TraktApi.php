@@ -267,6 +267,21 @@ class TraktApi
             ];
         }
 
+        $hasAnyId = ($item->type === 'movie' && ($movie['ids']['trakt'] ?? $movie['ids']['imdb'] ?? $movie['ids']['tmdb'] ?? null) !== null)
+            || ($item->type === 'episode' && ($episode['ids']['trakt'] ?? $episode['ids']['tvdb'] ?? $episode['ids']['imdb'] ?? $episode['ids']['tmdb'] ?? null) !== null);
+
+        if (!$hasAnyId) {
+            $this->logger->debug('Trakt scrobble skipped: no external ID available', [
+                'action' => $action,
+                'item' => $item->name,
+            ]);
+            return [
+                'action' => $action,
+                'watched_at' => date('c'),
+                'skipped' => true,
+            ];
+        }
+
         $payload = [
             'action' => $action,
             'progress' => $progress,

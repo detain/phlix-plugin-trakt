@@ -101,6 +101,49 @@ final class TraktApiTest extends TestCase
         $this->assertStringContainsString('/users/testuser/watched', $http->lastUrl);
     }
 
+    public function testScrobbleSkippedWhenNoExternalId(): void
+    {
+        $http = new MockHttpClient([['action' => 'start', 'watched_at' => '2026-06-28T00:00:00Z']]);
+        $api = new TraktApi($http, self::CLIENT_ID, self::CLIENT_SECRET, new NullLogger());
+
+        $item = new \Phlix\Media\Library\MediaItem(
+            id: 'mi-no-id',
+            name: 'No-ID Movie',
+            type: 'movie',
+            path: '/movies/no-id.mkv',
+            metadata: [],
+        );
+
+        $result = $api->scrobbleStart($item, 0, 'scrobble-token');
+
+        $this->assertSame('start', $result['action']);
+        $this->assertArrayHasKey('watched_at', $result);
+        $this->assertTrue($result['skipped']);
+        // HTTP client must never have been called.
+        $this->assertSame('', $http->lastMethod);
+    }
+
+    public function testScrobbleSkippedWhenNoExternalIdForEpisode(): void
+    {
+        $http = new MockHttpClient([['action' => 'pause', 'watched_at' => '2026-06-28T00:00:00Z']]);
+        $api = new TraktApi($http, self::CLIENT_ID, self::CLIENT_SECRET, new NullLogger());
+
+        $item = new \Phlix\Media\Library\MediaItem(
+            id: 'mi-ep-no-id',
+            name: 'No-ID Episode',
+            type: 'episode',
+            path: '/tv/show/s01e01.mkv',
+            metadata: [],
+        );
+
+        $result = $api->scrobblePause($item, 50, 'scrobble-token');
+
+        $this->assertSame('pause', $result['action']);
+        $this->assertArrayHasKey('watched_at', $result);
+        $this->assertTrue($result['skipped']);
+        $this->assertSame('', $http->lastMethod);
+    }
+
     public function testScrobbleSendsMandatoryTraktHeaders(): void
     {
         $http = new MockHttpClient([['action' => 'start', 'watched_at' => '2026-06-28T00:00:00Z']]);
