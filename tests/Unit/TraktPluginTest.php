@@ -6,6 +6,7 @@ namespace Phlix\Tests\Unit\Plugins\Scrobbler\Trakt;
 
 use Phlix\Plugins\Scrobbler\Trakt\HttpClientInterface;
 use Phlix\Plugins\Scrobbler\Trakt\TraktApi;
+use Phlix\Plugins\Scrobbler\Trakt\TraktApiException;
 use Phlix\Plugins\Scrobbler\Trakt\TraktAuthenticationException;
 use Phlix\Plugins\Scrobbler\Trakt\TraktPlugin;
 use Phlix\Plugins\Scrobbler\Trakt\TraktSettings;
@@ -296,6 +297,177 @@ final class TraktPluginTest extends TestCase
         $this->assertSame(0, $api->refreshCalls);
     }
 
+    // --- B4: single-flight lock around token refresh ------------------------
+
+    /**
+     * Single-flight guard: while a refresh is in flight, a SECOND caller that
+     * re-enters ensureFreshToken() must NOT trigger a second refresh of the
+     * SAME (now-rotating) refresh token. Trakt rotates the refresh token on
+     * every exchange, so a second exchange would invalidate the account.
+     *
+     * The fake re-enters ensureFreshToken() from inside refreshAccessToken()
+     * (i.e. while the gate is held), then returns the rotated tokens. We assert
+     * the API's refresh endpoint was hit EXACTLY once across both callers.
+     */
+    public function testConcurrentRefreshTriggersExactlyOneExchange(): void
+    {
+        $api = new ReentrantRefreshApi();
+        $api->refreshResult = [
+            'access_token' => 'rotated-access',
+            'refresh_token' => 'rotated-refresh',
+            'expires_in' => 7200,
+        ];
+
+        $plugin = new TraktPlugin(
+            $this->expiredSettings(),
+            new NullLogger(),
+            $api,
+            new RecordingSettingsRepository(),
+        );
+
+        // Let the fake re-enter ensureFreshToken() on this same plugin while the
+        // single-flight gate is held (simulating a second near-simultaneous
+        // playback event arriving mid-refresh).
+        $api->plugin = $plugin;
+
+        $result = $plugin->ensureFreshToken();
+
+        $this->assertTrue($result, 'the owning caller obtains a fresh token');
+        $this->assertSame(
+            1,
+            $api->refreshCalls,
+            'the refresh-token exchange must happen exactly once despite the concurrent caller',
+        );
+        $this->assertFalse(
+            $api->reentrantRefreshedAgain,
+            'the second (re-entrant) caller must NOT exchange the rotating refresh token again',
+        );
+
+        // The owning caller rotated the tokens.
+        $settings = $plugin->getSettings();
+        $this->assertSame('rotated-access', $settings->accessToken);
+        $this->assertSame('rotated-refresh', $settings->refreshToken);
+    }
+
+    /**
+     * The guard is released after a refresh (success path): a SUBSEQUENT,
+     * later refresh can proceed. A wedged guard would block all future
+     * refreshes after the first one.
+     */
+    public function testGuardIsReleasedSoLaterRefreshProceeds(): void
+    {
+        $api = new FakeTraktApi();
+        $api->refreshResult = [
+            'access_token' => 'first-access',
+            'refresh_token' => 'first-refresh',
+            'expires_in' => -10, // immediately re-expired so a 2nd refresh is needed
+        ];
+
+        $plugin = new TraktPlugin(
+            $this->expiredSettings(),
+            new NullLogger(),
+            $api,
+            new RecordingSettingsRepository(),
+        );
+
+        $this->assertTrue($plugin->ensureFreshToken());
+        $this->assertSame(1, $api->refreshCalls);
+
+        // The first refresh produced an already-expired token; the guard must
+        // be free for the next refresh to run.
+        $api->refreshResult = [
+            'access_token' => 'second-access',
+            'refresh_token' => 'second-refresh',
+            'expires_in' => 7200,
+        ];
+
+        $this->assertTrue($plugin->ensureFreshToken());
+        $this->assertSame(2, $api->refreshCalls, 'guard must be released so a later refresh proceeds');
+
+        $settings = $plugin->getSettings();
+        $this->assertSame('second-access', $settings->accessToken);
+    }
+
+    /**
+     * The guard is released even when the refresh THROWS (try/finally): a
+     * failed refresh must not wedge all future refreshes.
+     */
+    public function testGuardIsReleasedWhenRefreshThrows(): void
+    {
+        $api = new FakeTraktApi();
+        $api->throwOnFirstRefresh = true; // first refresh blows up
+        $api->refreshResult = [
+            'access_token' => 'recovered-access',
+            'refresh_token' => 'recovered-refresh',
+            'expires_in' => 7200,
+        ];
+
+        $plugin = new TraktPlugin(
+            $this->expiredSettings(),
+            new NullLogger(),
+            $api,
+            new RecordingSettingsRepository(),
+        );
+
+        $this->assertFalse($plugin->ensureFreshToken(), 'a throwing refresh reports failure');
+        $this->assertSame(1, $api->refreshCalls);
+
+        // A later refresh must still be able to run (guard not wedged).
+        $this->assertTrue($plugin->ensureFreshToken());
+        $this->assertSame(2, $api->refreshCalls, 'guard released on the exception path');
+
+        $settings = $plugin->getSettings();
+        $this->assertSame('recovered-access', $settings->accessToken);
+    }
+
+    /**
+     * End-to-end coroutine proof (requires ext-swoole): two coroutines call
+     * ensureFreshToken() near-simultaneously on the SAME plugin. The first
+     * acquires the single-flight gate and performs a refresh that yields; the
+     * second blocks (yields) on the gate, then — via double-checked locking —
+     * observes the rotated token and returns WITHOUT a second exchange.
+     */
+    public function testCoroutineSingleFlightExchangesOnce(): void
+    {
+        if (!\extension_loaded('swoole')) {
+            $this->markTestSkipped('ext-swoole not available; covered by the re-entrant unit test');
+        }
+
+        $api = new YieldingRefreshApi();
+        $api->refreshResult = [
+            'access_token' => 'coro-access',
+            'refresh_token' => 'coro-refresh',
+            'expires_in' => 7200,
+        ];
+
+        $plugin = new TraktPlugin(
+            $this->expiredSettings(),
+            new NullLogger(),
+            $api,
+            new RecordingSettingsRepository(),
+        );
+
+        /** @var array<int, bool> $results */
+        $results = [];
+
+        \Swoole\Coroutine\run(static function () use ($plugin, &$results): void {
+            \Swoole\Coroutine\go(static function () use ($plugin, &$results): void {
+                $results['a'] = $plugin->ensureFreshToken();
+            });
+            \Swoole\Coroutine\go(static function () use ($plugin, &$results): void {
+                $results['b'] = $plugin->ensureFreshToken();
+            });
+        });
+
+        $this->assertTrue($results['a'] ?? false, 'coroutine A obtains a fresh token');
+        $this->assertTrue($results['b'] ?? false, 'coroutine B obtains the rotated token via double-check');
+        $this->assertSame(1, $api->refreshCalls, 'exactly one /oauth/token exchange across both coroutines');
+
+        $settings = $plugin->getSettings();
+        $this->assertSame('coro-access', $settings->accessToken);
+        $this->assertSame('coro-refresh', $settings->refreshToken);
+    }
+
     // --- helpers ------------------------------------------------------------
 
     private function makeWiredPlugin(
@@ -373,6 +545,7 @@ final class FakeTraktApi extends TraktApi
     public int $scrobbleStartCalls = 0;
     public int $scrobbleStopCalls = 0;
     public bool $throwAuthOnFirstScrobble = false;
+    public bool $throwOnFirstRefresh = false;
     public string $lastScrobbleToken = '';
 
     /** @var array<string, mixed> */
@@ -390,6 +563,10 @@ final class FakeTraktApi extends TraktApi
     public function refreshAccessToken(string $refreshToken): array
     {
         $this->refreshCalls++;
+
+        if ($this->throwOnFirstRefresh && $this->refreshCalls === 1) {
+            throw new TraktApiException('refresh boom', 500);
+        }
 
         return $this->refreshResult;
     }
@@ -416,6 +593,86 @@ final class FakeTraktApi extends TraktApi
         }
 
         return ['action' => 'stop', 'watched_at' => '2026-06-28T00:00:00Z'];
+    }
+}
+
+/**
+ * Fake whose refreshAccessToken() RE-ENTERS the plugin's ensureFreshToken()
+ * once, while the single-flight gate is held, to simulate a second
+ * near-simultaneous playback event arriving mid-refresh (no coroutine needed).
+ * It records whether that re-entrant call performed a SECOND refresh.
+ */
+final class ReentrantRefreshApi extends TraktApi
+{
+    public int $refreshCalls = 0;
+    public bool $reentrantRefreshedAgain = false;
+    public ?TraktPlugin $plugin = null;
+    private bool $reentered = false;
+
+    /** @var array<string, mixed> */
+    public array $refreshResult = [
+        'access_token' => 'rotated-access',
+        'refresh_token' => 'rotated-refresh',
+        'expires_in' => 7200,
+    ];
+
+    public function __construct()
+    {
+        parent::__construct(new NullHttpClient(), 'client-id', 'client-secret', new NullLogger());
+    }
+
+    public function refreshAccessToken(string $refreshToken): array
+    {
+        $this->refreshCalls++;
+
+        // On the FIRST exchange (gate held by the owner), re-enter once to
+        // simulate the concurrent second caller. If the gate is sound, this
+        // re-entrant ensureFreshToken() must NOT cause another exchange.
+        if (!$this->reentered && $this->plugin !== null) {
+            $this->reentered = true;
+            $callsBefore = $this->refreshCalls;
+            $this->plugin->ensureFreshToken();
+            if ($this->refreshCalls > $callsBefore) {
+                $this->reentrantRefreshedAgain = true;
+            }
+        }
+
+        return $this->refreshResult;
+    }
+}
+
+/**
+ * Fake whose refreshAccessToken() YIELDS (Coroutine::sleep) so a second
+ * coroutine can reach ensureFreshToken() and block on the single-flight gate
+ * while this exchange is in flight. Requires ext-swoole.
+ */
+final class YieldingRefreshApi extends TraktApi
+{
+    public int $refreshCalls = 0;
+
+    /** @var array<string, mixed> */
+    public array $refreshResult = [
+        'access_token' => 'rotated-access',
+        'refresh_token' => 'rotated-refresh',
+        'expires_in' => 7200,
+    ];
+
+    public function __construct()
+    {
+        parent::__construct(new NullHttpClient(), 'client-id', 'client-secret', new NullLogger());
+    }
+
+    public function refreshAccessToken(string $refreshToken): array
+    {
+        $this->refreshCalls++;
+
+        // Yield so the sibling coroutine runs and parks on the gate before we
+        // rotate. Cooperative — never a blocking sleep.
+        if (\class_exists(\Swoole\Coroutine::class) && \Swoole\Coroutine::getCid() > 0) {
+            \Swoole\Coroutine::sleep(0.02);
+        }
+
+        return $this->refreshResult;
     }
 }
 
