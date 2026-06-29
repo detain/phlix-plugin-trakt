@@ -28,12 +28,14 @@ class TraktHistorySync
      * @param TraktApi $api Trakt API client
      * @param WatchHistory $watchHistory Local watch history repository
      * @param TraktSettings $settings User settings
+     * @param \Workerman\MySQL\Connection $db Database connection for media item lookups
      * @param LoggerInterface|null $logger Optional PSR-3 logger
      */
     public function __construct(
         private readonly TraktApi $api,
         private readonly WatchHistory $watchHistory,
         private readonly TraktSettings $settings,
+        private readonly \Workerman\MySQL\Connection $db,
         ?LoggerInterface $logger = null,
     ) {
         $this->logger = $logger ?? new NullLogger();
@@ -193,23 +195,74 @@ class TraktHistorySync
     /**
      * Find a local media item ID from a Trakt history entry.
      *
-     * Stub implementation: matching Trakt items back to local
-     * `media_items` rows requires a TMDB/TVDB/IMDB-aware lookup that is
-     * not yet implemented. Returns null for every input so the sync
-     * loop is effectively a no-op until the lookup is wired up.
+     * Matches TMDB, TVDB, or IMDB IDs from the Trakt history item against
+     * the local media_items.metadata_json column to resolve the local ID.
      *
-     * @param array<mixed, mixed> $item Trakt history item
+     * @param array<mixed, mixed> $item Trakt history item with movie or episode ids
      *
      * @return string|null Local media_items.id if resolved, null otherwise.
      */
     private function findMediaItemId(array $item): ?string
     {
-        // Future lookup: match $item['movie']['ids'] / $item['episode']['ids']
-        // (TMDB/TVDB/IMDB) against the local media_items table. Until that is
-        // wired up this stub returns null and the surrounding loop is a no-op.
+        $movie = $item['movie'] ?? null;
+        $episode = $item['episode'] ?? null;
+
+        $ids = null;
+        if (is_array($movie) && isset($movie['ids']) && is_array($movie['ids'])) {
+            $ids = $movie['ids'];
+        } elseif (is_array($episode) && isset($episode['ids']) && is_array($episode['ids'])) {
+            $ids = $episode['ids'];
+        }
+
+        if ($ids === null) {
+            return null;
+        }
+
+        // Early exit for pre-resolved ID (test seam)
         if (isset($item['_resolved_media_item_id']) && is_string($item['_resolved_media_item_id'])) {
             return $item['_resolved_media_item_id'];
         }
+
+        // TMDB is most reliable for movies, TVDB for shows, IMDB is universal fallback
+        foreach (['tmdb', 'tvdb', 'imdb'] as $idType) {
+            $externalId = $ids[$idType] ?? null;
+            if ($externalId === null || $externalId === '') {
+                continue;
+            }
+
+            $mediaItemId = $this->findMediaItemIdByExternalId($idType, (string) $externalId);
+            if ($mediaItemId !== null) {
+                return $mediaItemId;
+            }
+        }
+
+        return null;
+    }
+
+    /**
+     * Look up a local media item ID by external ID.
+     *
+     * The metadata_json column stores external IDs like:
+     * {"tmdb_id": "123", "imdb_id": "tt123", "tvdb_id": "456"}
+     *
+     * @param string $idType tmdb, tvdb, or imdb
+     * @param string $externalId The external ID value
+     *
+     * @return string|null Local media_items.id if found, null otherwise.
+     */
+    private function findMediaItemIdByExternalId(string $idType, string $externalId): ?string
+    {
+        $likePattern = '%"' . $idType . '_id":"' . $externalId . '"%';
+
+        $result = $this->db->query(
+            'SELECT id FROM media_items WHERE metadata_json LIKE ? LIMIT 1',
+            [$likePattern]
+        );
+
+        if (is_array($result) && isset($result[0]['id'])) {
+            return (string) $result[0]['id'];
+        }
+
         return null;
     }
 

@@ -13,6 +13,7 @@ use Phlix\Shared\Events\Playback\PlaybackStopped;
 use Psr\Container\ContainerInterface;
 use Psr\Log\LoggerInterface;
 use Psr\Log\NullLogger;
+use Workerman\MySQL\Connection;
 
 /**
  * Trakt.tv scrobbler plugin entry class.
@@ -56,6 +57,7 @@ final class TraktPlugin implements LifecycleInterface
     private ?WatchHistory $watchHistory = null;
     private ?LoggerInterface $logger = null;
     private ?TraktApi $api = null;
+    private ?Connection $db = null;
 
     /**
      * Writer used to persist rotated tokens. Optional: the host may not
@@ -172,6 +174,16 @@ final class TraktPlugin implements LifecycleInterface
 
         $watchHist = $container->get(WatchHistory::class);
         $this->watchHistory = $watchHist instanceof WatchHistory ? $watchHist : null;
+
+        try {
+            $db = $container->get(Connection::class);
+            $this->db = $db instanceof Connection ? $db : null;
+        } catch (\Throwable $e) {
+            $this->logger?->warning('Trakt: database connection unavailable; Trakt→Phlix sync will not function', [
+                'error' => $e->getMessage(),
+            ]);
+            $this->db = null;
+        }
 
         $this->resolveSettingsRepository($container);
         $this->resolveTokenCipher($container);
@@ -972,7 +984,7 @@ final class TraktPlugin implements LifecycleInterface
      */
     private function syncToTrakt(string $mediaItemId, int $positionTicks): void
     {
-        if ($this->watchHistory === null || $this->api === null) {
+        if ($this->watchHistory === null || $this->api === null || $this->db === null) {
             return;
         }
 
@@ -986,6 +998,7 @@ final class TraktPlugin implements LifecycleInterface
             $this->api,
             $this->watchHistory,
             $this->settings,
+            $this->db,
             $this->logger
         );
 
