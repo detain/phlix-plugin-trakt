@@ -12,6 +12,8 @@ use Phlix\Plugins\Scrobbler\Trakt\TokenCipher;
 use Phlix\Plugins\Scrobbler\Trakt\TraktPlugin;
 use Phlix\Plugins\Scrobbler\Trakt\TraktSettings;
 use Phlix\Plugins\Scrobbler\Trakt\TraktSettingsRepository;
+use Phlix\Shared\Events\Playback\PlaybackPaused;
+use Phlix\Shared\Events\Playback\PlaybackResumed;
 use Phlix\Shared\Events\Playback\PlaybackStarted;
 use Phlix\Shared\Events\Playback\PlaybackStopped;
 use PHPUnit\Framework\TestCase;
@@ -27,8 +29,12 @@ final class TraktPluginTest extends TestCase
 
         $this->assertArrayHasKey(PlaybackStarted::class, $events);
         $this->assertArrayHasKey(PlaybackStopped::class, $events);
+        $this->assertArrayHasKey(PlaybackPaused::class, $events);
+        $this->assertArrayHasKey(PlaybackResumed::class, $events);
         $this->assertSame('onPlaybackStarted', $events[PlaybackStarted::class]);
         $this->assertSame('onPlaybackStopped', $events[PlaybackStopped::class]);
+        $this->assertSame('onPlaybackPaused', $events[PlaybackPaused::class]);
+        $this->assertSame('onPlaybackResumed', $events[PlaybackResumed::class]);
     }
 
     public function testConfigureStoresSettings(): void
@@ -296,6 +302,94 @@ final class TraktPluginTest extends TestCase
 
         $this->assertTrue($plugin->ensureFreshToken());
         $this->assertSame(0, $api->refreshCalls);
+    }
+
+    // --- B6: pause/resume scrobble handlers ---------------------------------
+
+    /**
+     * onPlaybackPaused calls scrobblePause on the API with correct parameters.
+     */
+    public function testOnPlaybackPausedSubmitsScrobblePause(): void
+    {
+        $api = new FakeTraktApi();
+
+        $plugin = $this->makeWiredPlugin(
+            api: $api,
+            repo: new RecordingSettingsRepository(),
+            settings: $this->freshSettings(),
+        );
+
+        $plugin->onPlaybackPaused($this->pauseEvent());
+
+        $this->assertSame(1, $api->scrobblePauseCalls);
+        $this->assertSame(0, $api->scrobbleStartCalls);
+        $this->assertSame(0, $api->scrobbleStopCalls);
+    }
+
+    /**
+     * onPlaybackPaused does nothing when scrobble is disabled.
+     */
+    public function testOnPlaybackPausedDoesNothingWhenScrobbleDisabled(): void
+    {
+        $api = new FakeTraktApi();
+
+        $settings = $this->freshSettings();
+        $plugin = $this->makeWiredPlugin(
+            api: $api,
+            repo: new RecordingSettingsRepository(),
+            settings: $settings,
+        );
+        $plugin->configure(array_merge($settings->toArray(), [
+            'enabled' => true,
+            'scrobble_enabled' => false,
+        ]));
+
+        $plugin->onPlaybackPaused($this->pauseEvent());
+
+        $this->assertSame(0, $api->scrobblePauseCalls);
+    }
+
+    /**
+     * onPlaybackResumed calls scrobbleStart on the API (Trakt uses start to resume).
+     */
+    public function testOnPlaybackResumedSubmitsScrobbleStart(): void
+    {
+        $api = new FakeTraktApi();
+
+        $plugin = $this->makeWiredPlugin(
+            api: $api,
+            repo: new RecordingSettingsRepository(),
+            settings: $this->freshSettings(),
+        );
+
+        $plugin->onPlaybackResumed($this->resumeEvent());
+
+        $this->assertSame(1, $api->scrobbleStartCalls);
+        $this->assertSame(0, $api->scrobblePauseCalls);
+        $this->assertSame(0, $api->scrobbleStopCalls);
+    }
+
+    /**
+     * onPlaybackResumed does nothing when scrobble is disabled.
+     */
+    public function testOnPlaybackResumedDoesNothingWhenScrobbleDisabled(): void
+    {
+        $api = new FakeTraktApi();
+
+        $settings = $this->freshSettings();
+        $plugin = $this->makeWiredPlugin(
+            api: $api,
+            repo: new RecordingSettingsRepository(),
+            settings: $settings,
+        );
+        $plugin->configure(array_merge($settings->toArray(), [
+            'enabled' => true,
+            'scrobble_enabled' => false,
+        ]));
+
+        $plugin->onPlaybackResumed($this->resumeEvent());
+
+        $this->assertSame(0, $api->scrobbleStartCalls);
     }
 
     // --- B4: single-flight lock around token refresh ------------------------
@@ -647,6 +741,28 @@ final class TraktPluginTest extends TestCase
             reachedEnd: false,
         );
     }
+
+    private function pauseEvent(): PlaybackPaused
+    {
+        return new PlaybackPaused(
+            sessionId: 'sess-1',
+            userId: 'user-1',
+            mediaItemId: 'mi-1',
+            deviceId: 'dev-1',
+            positionTicks: 5_000_000,
+        );
+    }
+
+    private function resumeEvent(): PlaybackResumed
+    {
+        return new PlaybackResumed(
+            sessionId: 'sess-1',
+            userId: 'user-1',
+            mediaItemId: 'mi-1',
+            deviceId: 'dev-1',
+            positionTicks: 5_000_000,
+        );
+    }
 }
 
 /**
@@ -657,6 +773,7 @@ final class FakeTraktApi extends TraktApi
     public int $refreshCalls = 0;
     public int $scrobbleStartCalls = 0;
     public int $scrobbleStopCalls = 0;
+    public int $scrobblePauseCalls = 0;
     public bool $throwAuthOnFirstScrobble = false;
     public bool $throwOnFirstRefresh = false;
     public string $lastScrobbleToken = '';
@@ -706,6 +823,18 @@ final class FakeTraktApi extends TraktApi
         }
 
         return ['action' => 'stop', 'watched_at' => '2026-06-28T00:00:00Z'];
+    }
+
+    public function scrobblePause(\Phlix\Media\Library\MediaItem $item, int $progress, string $accessToken): array
+    {
+        $this->scrobblePauseCalls++;
+        $this->lastScrobbleToken = $accessToken;
+
+        if ($this->throwAuthOnFirstScrobble && $this->scrobblePauseCalls === 1) {
+            throw new TraktAuthenticationException('Unauthorized', 401);
+        }
+
+        return ['action' => 'pause', 'watched_at' => '2026-06-28T00:00:00Z'];
     }
 }
 

@@ -8,6 +8,8 @@ use Phlix\Auth\WatchHistory;
 use Phlix\Media\Library\ItemRepository;
 use Phlix\Media\Library\MediaItem;
 use Phlix\Shared\Plugin\LifecycleInterface;
+use Phlix\Shared\Events\Playback\PlaybackPaused;
+use Phlix\Shared\Events\Playback\PlaybackResumed;
 use Phlix\Shared\Events\Playback\PlaybackStarted;
 use Phlix\Shared\Events\Playback\PlaybackStopped;
 use Psr\Container\ContainerInterface;
@@ -52,6 +54,11 @@ final class TraktPlugin implements LifecycleInterface
      * Plugin type identifier used in the plugin manifest.
      */
     public const PLUGIN_TYPE = 'scrobbler';
+
+    /**
+     * Interval for periodic Trakt→Phlix history sync (30 minutes).
+     */
+    private const SYNC_INTERVAL_SEC = 1800;
 
     private ?ItemRepository $itemRepository = null;
     private ?WatchHistory $watchHistory = null;
@@ -189,6 +196,9 @@ final class TraktPlugin implements LifecycleInterface
         $this->resolveTokenCipher($container);
 
         $this->initApi();
+
+        // B8: Schedule periodic Trakt→Phlix history sync (every 30 minutes)
+        $this->schedulePeriodicSync($container);
     }
 
     /**
@@ -292,6 +302,8 @@ final class TraktPlugin implements LifecycleInterface
         return [
             PlaybackStarted::class => 'onPlaybackStarted',
             PlaybackStopped::class => 'onPlaybackStopped',
+            PlaybackPaused::class => 'onPlaybackPaused',
+            PlaybackResumed::class => 'onPlaybackResumed',
         ];
     }
 
@@ -388,6 +400,80 @@ final class TraktPlugin implements LifecycleInterface
         if ($event->reachedEnd && $this->watchHistory !== null) {
             $this->syncToTrakt($event->mediaItemId, $event->finalPositionTicks);
         }
+    }
+
+    /**
+     * Handle playback pause — submit scrobble pause to Trakt.
+     *
+     * B6: Trakt's 3-state scrobble model supports pause; this mirrors the
+     * start handler but calls scrobblePause() instead.
+     *
+     * @param PlaybackPaused $event The playback paused event
+     *
+     * @return void
+     *
+     * @since 0.14.0
+     */
+    public function onPlaybackPaused(PlaybackPaused $event): void
+    {
+        if (!$this->isConfigured() || !$this->settings->scrobbleEnabled) {
+            return;
+        }
+
+        $mediaItem = $this->findMediaItem($event->mediaItemId);
+        if ($mediaItem === null) {
+            $this->logger?->debug('Trakt: media item not found on pause', [
+                'media_item_id' => $event->mediaItemId,
+            ]);
+            return;
+        }
+
+        $progressSecs = (int)($event->positionTicks / 10_000_000);
+
+        $this->ensureFreshToken();
+        $accessToken = $this->settings->accessToken ?? '';
+
+        /** @var TraktApi $api */
+        $api = $this->api;
+
+        $this->scheduleAsyncScrobblePause($mediaItem, $progressSecs, $accessToken, $api);
+    }
+
+    /**
+     * Handle playback resume — submit scrobble start to Trakt.
+     *
+     * B6: Trakt's 3-state scrobble model uses "start" to resume after a pause.
+     * This mirrors the start handler exactly.
+     *
+     * @param PlaybackResumed $event The playback resumed event
+     *
+     * @return void
+     *
+     * @since 0.14.0
+     */
+    public function onPlaybackResumed(PlaybackResumed $event): void
+    {
+        if (!$this->isConfigured() || !$this->settings->scrobbleEnabled) {
+            return;
+        }
+
+        $mediaItem = $this->findMediaItem($event->mediaItemId);
+        if ($mediaItem === null) {
+            $this->logger?->debug('Trakt: media item not found on resume', [
+                'media_item_id' => $event->mediaItemId,
+            ]);
+            return;
+        }
+
+        $progressSecs = (int)($event->positionTicks / 10_000_000);
+
+        $this->ensureFreshToken();
+        $accessToken = $this->settings->accessToken ?? '';
+
+        /** @var TraktApi $api */
+        $api = $this->api;
+
+        $this->scheduleAsyncScrobbleStart($mediaItem, $progressSecs, $accessToken, $api);
     }
 
     /**
@@ -527,6 +613,74 @@ final class TraktPlugin implements LifecycleInterface
             }
         } catch (TraktApiException $e) {
             $this->logger?->warning('Trakt: scrobble stop failed', [
+                'error' => $e->getMessage(),
+            ]);
+        }
+    }
+
+    /**
+     * B6: Schedule an async scrobble-pause call.
+     *
+     * Uses Workerman\Timer::add(0, ...) to defer the blocking HTTP call to the
+     * next event-loop tick so the Workerman worker returns to its loop
+     * immediately. Falls back to synchronous execution when
+     * Workerman\Timer is unavailable (unit tests, CLI).
+     *
+     * @param MediaItem $mediaItem Media item that was playing
+     * @param int $progressSecs Current playback position in seconds
+     * @param string $accessToken OAuth access token
+     * @param TraktApi $api Trakt API client
+     *
+     * @return void
+     */
+    private function scheduleAsyncScrobblePause(MediaItem $mediaItem, int $progressSecs, string $accessToken, TraktApi $api): void
+    {
+        if (class_exists(\Workerman\Timer::class)) {
+            \Workerman\Timer::add(0, function () use ($mediaItem, $progressSecs, $accessToken, $api): void {
+                $this->executeScrobblePause($mediaItem, $progressSecs, $accessToken, $api);
+            });
+        } else {
+            // Fallback: run synchronously (unit-test / CLI path)
+            $this->executeScrobblePause($mediaItem, $progressSecs, $accessToken, $api);
+        }
+    }
+
+    /**
+     * B6: Execute a scrobble-pause call (called inside timer callback).
+     *
+     * @param MediaItem $mediaItem Media item that was playing
+     * @param int $progressSecs Current playback position in seconds
+     * @param string $accessToken OAuth access token
+     * @param TraktApi $api Trakt API client
+     *
+     * @return void
+     */
+    private function executeScrobblePause(MediaItem $mediaItem, int $progressSecs, string $accessToken, TraktApi $api): void
+    {
+        try {
+            $api->scrobblePause($mediaItem, $progressSecs, $accessToken);
+
+            $this->logger?->info('Trakt scrobble pause submitted', [
+                'title' => $mediaItem->name,
+                'progress' => $progressSecs,
+            ]);
+        } catch (TraktAuthenticationException $e) {
+            if ($this->refreshAfterAuthFailure($e, 'scrobble pause')) {
+                try {
+                    $api->scrobblePause($mediaItem, $progressSecs, $this->settings->accessToken ?? '');
+
+                    $this->logger?->info('Trakt scrobble pause submitted after refresh', [
+                        'title' => $mediaItem->name,
+                        'progress' => $progressSecs,
+                    ]);
+                } catch (TraktApiException $retry) {
+                    $this->logger?->warning('Trakt: scrobble pause failed after refresh retry', [
+                        'error' => $retry->getMessage(),
+                    ]);
+                }
+            }
+        } catch (TraktApiException $e) {
+            $this->logger?->warning('Trakt: scrobble pause failed', [
                 'error' => $e->getMessage(),
             ]);
         }
@@ -1011,6 +1165,67 @@ final class TraktPlugin implements LifecycleInterface
             $positionTicks,
             is_numeric($durationTicks) ? (int) $durationTicks : null
         );
+    }
+
+    /**
+     * B8: Schedule periodic Trakt→Phlix history sync.
+     *
+     * Uses Workerman\Timer::add() to run the sync every SYNC_INTERVAL_SEC
+     * (30 minutes). Gracefully no-ops when Workerman\Timer is unavailable
+     * (unit tests, CLI) or when sync is disabled.
+     *
+     * @param ContainerInterface $container Host PSR-11 container
+     *
+     * @return void
+     */
+    private function schedulePeriodicSync(ContainerInterface $container): void
+    {
+        if (!$this->settings->isConfigured() || !$this->settings->syncEnabled) {
+            return;
+        }
+
+        try {
+            \Workerman\Timer::add(self::SYNC_INTERVAL_SEC, function (): void {
+                $this->runScheduledSync();
+            });
+        } catch (\Throwable) {
+            // Timer not available outside Workerman process (unit tests, CLI)
+        }
+    }
+
+    /**
+     * B8: Execute the periodic Trakt→Phlix sync.
+     *
+     * Called by the Workerman timer on each tick. Catches all exceptions so a
+     * failed sync does not crash the worker.
+     *
+     * @return void
+     */
+    private function runScheduledSync(): void
+    {
+        if ($this->watchHistory === null || $this->api === null || $this->db === null) {
+            return;
+        }
+
+        if (!$this->settings->isConfigured() || !$this->settings->syncEnabled) {
+            return;
+        }
+
+        try {
+            $sync = new TraktHistorySync(
+                $this->api,
+                $this->watchHistory,
+                $this->settings,
+                $this->db,
+                $this->logger
+            );
+            // Use 'default' profile for now (per-profile sync is future work)
+            $sync->syncTraktToPhlix('default');
+        } catch (\Throwable $e) {
+            $this->logger?->warning('Trakt periodic sync failed', [
+                'error' => $e->getMessage(),
+            ]);
+        }
     }
 
     /**
