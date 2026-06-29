@@ -34,6 +34,14 @@ use Psr\Log\NullLogger;
  * both POST the same refresh token (which would invalidate the account); the
  * second caller awaits the first and reuses the freshly-rotated token.
  *
+ * Token security (step S1): the OAuth access/refresh tokens are encrypted at
+ * rest via an injected {@see TokenCipher} (libsodium by default) before they
+ * are written through the {@see TraktSettingsRepository}, decrypted on load,
+ * and NEVER returned to the admin SPA — {@see TraktPlugin::getSettingsForSpa()}
+ * exposes only a redacted projection ({@see TraktSettings::toSpaArray()}). When
+ * no cipher/key is configured the plugin degrades gracefully (logs a warning
+ * and stores the tokens as-is) rather than failing.
+ *
  * @package Phlix\Plugins\Scrobbler\Trakt
  * @since 0.14.0
  */
@@ -54,6 +62,15 @@ final class TraktPlugin implements LifecycleInterface
      * provide one, in which case persistence is a no-op (with a warning).
      */
     private ?TraktSettingsRepository $settingsRepository = null;
+
+    /**
+     * Cipher used to encrypt OAuth tokens at rest (step S1). Optional: the host
+     * may not provide a key/cipher, in which case tokens are stored as-is and a
+     * warning is logged on persist. Resolved from the container in
+     * {@see TraktPlugin::onEnable()} (same optional-service pattern as the
+     * settings repository) but may also be injected directly (test seam).
+     */
+    private ?TokenCipher $tokenCipher = null;
 
     /**
      * Single-flight gate around the OAuth refresh (step B4).
@@ -98,17 +115,21 @@ final class TraktPlugin implements LifecycleInterface
      * @param TraktApi|null $api Pre-built API client (test seam; production builds it in onEnable())
      * @param TraktSettingsRepository|null $settingsRepository Persistence writer for rotated tokens
      *                                     (test seam; production resolves it from the container)
+     * @param TokenCipher|null $tokenCipher Cipher used to encrypt tokens at rest
+     *                                     (test seam; production resolves it from the container)
      */
     public function __construct(
         ?TraktSettings $settings = null,
         ?LoggerInterface $logger = null,
         ?TraktApi $api = null,
         ?TraktSettingsRepository $settingsRepository = null,
+        ?TokenCipher $tokenCipher = null,
     ) {
         $this->settings = $settings ?? new TraktSettings();
         $this->logger = $logger ?? new NullLogger();
         $this->api = $api;
         $this->settingsRepository = $settingsRepository;
+        $this->tokenCipher = $tokenCipher;
     }
 
     /**
@@ -123,7 +144,12 @@ final class TraktPlugin implements LifecycleInterface
      */
     public function configure(array $settings): void
     {
-        $this->settings = TraktSettings::fromArray($settings);
+        // Decrypt tokens on the way in when a cipher is available (they are
+        // written encrypted by persistSettings()). When no cipher is present
+        // fromArray() takes the token fields verbatim, and the cipher itself
+        // passes through any value it does not recognise as its own ciphertext
+        // (legacy plaintext), so upgrades load correctly either way.
+        $this->settings = TraktSettings::fromArray($settings, $this->tokenCipher);
         $this->enabled = ($settings['enabled'] ?? false) === true;
     }
 
@@ -148,6 +174,7 @@ final class TraktPlugin implements LifecycleInterface
         $this->watchHistory = $watchHist instanceof WatchHistory ? $watchHist : null;
 
         $this->resolveSettingsRepository($container);
+        $this->resolveTokenCipher($container);
 
         $this->initApi();
     }
@@ -180,6 +207,51 @@ final class TraktPlugin implements LifecycleInterface
                 'error' => $e->getMessage(),
             ]);
             $this->settingsRepository = null;
+        }
+    }
+
+    /**
+     * Resolve the optional token cipher used to encrypt OAuth tokens at rest.
+     *
+     * Mirrors the optional-service pattern used for the settings repository:
+     * the host is not required to bind a {@see TokenCipher}. Resolution order:
+     *  1. A {@see TokenCipher} bound in the container (host override), else
+     *  2. a {@see SodiumTokenCipher} built from the `token_encryption_key`
+     *     entry of the plugin config.
+     * When neither yields a cipher we leave it null and
+     * {@see TraktPlugin::persistSettings()} stores tokens as-is (with a
+     * warning) rather than hard-failing.
+     *
+     * @param ContainerInterface $container Host PSR-11 container
+     *
+     * @return void
+     */
+    private function resolveTokenCipher(ContainerInterface $container): void
+    {
+        if ($this->tokenCipher !== null) {
+            return;
+        }
+
+        try {
+            if ($container->has(TokenCipher::class)) {
+                $cipher = $container->get(TokenCipher::class);
+                if ($cipher instanceof TokenCipher) {
+                    $this->tokenCipher = $cipher;
+                    return;
+                }
+            }
+        } catch (\Throwable $e) {
+            $this->logger?->warning('Trakt: token cipher unavailable from container; tokens may be stored unencrypted', [
+                'error' => $e->getMessage(),
+            ]);
+        }
+
+        // Fall back to a libsodium cipher built from the host config key.
+        $config = $this->loadConfig();
+        $this->tokenCipher = SodiumTokenCipher::fromConfig($config['token_encryption_key'] ?? null);
+
+        if ($this->tokenCipher === null) {
+            $this->logger?->warning('Trakt: no token encryption key configured; OAuth tokens will be stored unencrypted');
         }
     }
 
@@ -354,6 +426,23 @@ final class TraktPlugin implements LifecycleInterface
     public function getSettings(): TraktSettings
     {
         return $this->settings;
+    }
+
+    /**
+     * Get a REDACTED settings projection safe to return to the admin SPA.
+     *
+     * Never includes the raw OAuth token strings — only the editable
+     * preferences plus a `has_tokens` connection flag and `token_expires_at`
+     * status. Use this (NOT {@see TraktPlugin::getSettings()}) anywhere settings
+     * are serialized for the admin Plugins page.
+     *
+     * @return array<string, mixed>
+     *
+     * @since 0.14.0
+     */
+    public function getSettingsForSpa(): array
+    {
+        return $this->settings->toSpaArray();
     }
 
     /**
@@ -692,8 +781,17 @@ final class TraktPlugin implements LifecycleInterface
             return;
         }
 
+        if ($this->tokenCipher === null && $this->settings->hasTokens()) {
+            // Graceful degrade (S1): no cipher/key available, so the tokens are
+            // stored as-is. We still persist (losing tokens on restart would be
+            // worse), but warn so the operator can configure a key.
+            $this->logger?->warning('Trakt: no token cipher available; storing OAuth tokens unencrypted');
+        }
+
         try {
-            $this->settingsRepository->save($this->settings->toArray());
+            // Encrypt tokens at rest (S1): the storage payload carries ciphertext
+            // for access/refresh tokens, never the raw long-lived credentials.
+            $this->settingsRepository->save($this->settings->toStorageArray($this->tokenCipher));
         } catch (\Throwable $e) {
             $this->logger?->warning('Trakt: failed to persist settings', [
                 'error' => $e->getMessage(),
