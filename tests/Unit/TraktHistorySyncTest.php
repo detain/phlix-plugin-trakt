@@ -141,7 +141,7 @@ final class TraktHistorySyncTest extends TestCase
     public function testFindMediaItemIdTriesImdbWhenTmdbAndTvdbNotFound(): void
     {
         $db = new TraktHistorySyncTestDbDouble();
-        $db->setResults([[], [], ['id' => 'imdb-media-item']]);
+        $db->setResults([[], ['id' => 'imdb-media-item']]);
         $sync = $this->createSync($db);
 
         $item = [
@@ -217,6 +217,7 @@ final class TraktHistorySyncTest extends TestCase
                     'slug' => 'movie-slug',
                     'imdb' => '',  // empty - should be skipped
                     'tmdb' => 123,
+                    'tvdb' => 456,  // tvdb is tried when tmdb fails and imdb is empty
                 ],
             ],
         ];
