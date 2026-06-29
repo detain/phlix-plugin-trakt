@@ -313,38 +313,20 @@ final class TraktPlugin implements LifecycleInterface
 
         $progressSecs = (int)($event->positionTicks / 10_000_000);
 
+        // B5: Ensure token is fresh BEFORE scheduling async call.
+        // Token refresh is synchronous but fast (single HTTP round-trip to Trakt).
+        // The actual scrobble HTTP call is deferred to avoid blocking the worker.
         $this->ensureFreshToken();
+        $accessToken = $this->settings->accessToken ?? '';
 
-        /** @var TraktApi */
+        /** @var TraktApi $api */
         $api = $this->api;
 
-        try {
-            $api->scrobbleStart($mediaItem, $progressSecs, $this->settings->accessToken ?? '');
-
-            $this->logger?->info('Trakt scrobble start submitted', [
-                'title' => $mediaItem->name,
-                'progress' => $progressSecs,
-            ]);
-        } catch (TraktAuthenticationException $e) {
-            if ($this->refreshAfterAuthFailure($e, 'scrobble start')) {
-                try {
-                    $api->scrobbleStart($mediaItem, $progressSecs, $this->settings->accessToken ?? '');
-
-                    $this->logger?->info('Trakt scrobble start submitted after refresh', [
-                        'title' => $mediaItem->name,
-                        'progress' => $progressSecs,
-                    ]);
-                } catch (TraktApiException $retry) {
-                    $this->logger?->warning('Trakt: scrobble start failed after refresh retry', [
-                        'error' => $retry->getMessage(),
-                    ]);
-                }
-            }
-        } catch (TraktApiException $e) {
-            $this->logger?->warning('Trakt: scrobble start failed', [
-                'error' => $e->getMessage(),
-            ]);
-        }
+        // B5: Non-blocking async scrobble via Workerman\Timer::add(0, ...).
+        // Schedule on next event-loop tick so the worker returns to its loop
+        // immediately. Falls back to synchronous execution when Workerman\Timer
+        // is unavailable (e.g. CLI, unit tests outside a Workerman process).
+        $this->scheduleAsyncScrobbleStart($mediaItem, $progressSecs, $accessToken, $api);
     }
 
     /**
@@ -378,13 +360,139 @@ final class TraktPlugin implements LifecycleInterface
 
         $progressSecs = (int)($event->finalPositionTicks / 10_000_000);
 
+        // B5: Ensure token is fresh BEFORE scheduling async call.
         $this->ensureFreshToken();
+        $accessToken = $this->settings->accessToken ?? '';
 
-        /** @var TraktApi */
+        /** @var TraktApi $api */
         $api = $this->api;
 
+        // B5: Non-blocking async scrobble via Workerman\Timer::add(0, ...).
+        $this->scheduleAsyncScrobbleStop($mediaItem, $progressSecs, $accessToken, $api);
+
+        // syncToTrakt is synchronous (DB writes + potential API call) but only
+        // runs when reachedEnd=true, which is already a terminal event for
+        // this playback session, so blocking is acceptable there.
+        if ($event->reachedEnd && $this->watchHistory !== null) {
+            $this->syncToTrakt($event->mediaItemId, $event->finalPositionTicks);
+        }
+    }
+
+    /**
+     * B5: Schedule an async scrobble-start call.
+     *
+     * Uses Workerman\Timer::add(0, ...) to defer the blocking HTTP call to the
+     * next event-loop tick so the Workerman worker returns to its loop
+     * immediately. Falls back to synchronous execution when
+     * Workerman\Timer is unavailable (unit tests, CLI).
+     *
+     * @param MediaItem $mediaItem Media item being played
+     * @param int $progressSecs Current playback position in seconds
+     * @param string $accessToken OAuth access token
+     * @param TraktApi $api Trakt API client
+     *
+     * @return void
+     */
+    private function scheduleAsyncScrobbleStart(MediaItem $mediaItem, int $progressSecs, string $accessToken, TraktApi $api): void
+    {
+        if (class_exists(\Workerman\Timer::class)) {
+            \Workerman\Timer::add(0, function () use ($mediaItem, $progressSecs, $accessToken, $api): void {
+                $this->executeScrobbleStart($mediaItem, $progressSecs, $accessToken, $api);
+            });
+        } else {
+            // Fallback: run synchronously (unit-test / CLI path)
+            $this->executeScrobbleStart($mediaItem, $progressSecs, $accessToken, $api);
+        }
+    }
+
+    /**
+     * B5: Execute a scrobble-start call (called inside timer callback).
+     *
+     * Contains the full error-handling path: initial call, 401-triggered
+     * refresh-then-retry, and final error logging.
+     *
+     * @param MediaItem $mediaItem Media item being played
+     * @param int $progressSecs Current playback position in seconds
+     * @param string $accessToken OAuth access token
+     * @param TraktApi $api Trakt API client
+     *
+     * @return void
+     */
+    private function executeScrobbleStart(MediaItem $mediaItem, int $progressSecs, string $accessToken, TraktApi $api): void
+    {
         try {
-            $api->scrobbleStop($mediaItem, $progressSecs, $this->settings->accessToken ?? '');
+            $api->scrobbleStart($mediaItem, $progressSecs, $accessToken);
+
+            $this->logger?->info('Trakt scrobble start submitted', [
+                'title' => $mediaItem->name,
+                'progress' => $progressSecs,
+            ]);
+        } catch (TraktAuthenticationException $e) {
+            if ($this->refreshAfterAuthFailure($e, 'scrobble start')) {
+                try {
+                    $api->scrobbleStart($mediaItem, $progressSecs, $this->settings->accessToken ?? '');
+
+                    $this->logger?->info('Trakt scrobble start submitted after refresh', [
+                        'title' => $mediaItem->name,
+                        'progress' => $progressSecs,
+                    ]);
+                } catch (TraktApiException $retry) {
+                    $this->logger?->warning('Trakt: scrobble start failed after refresh retry', [
+                        'error' => $retry->getMessage(),
+                    ]);
+                }
+            }
+        } catch (TraktApiException $e) {
+            $this->logger?->warning('Trakt: scrobble start failed', [
+                'error' => $e->getMessage(),
+            ]);
+        }
+    }
+
+    /**
+     * B5: Schedule an async scrobble-stop call.
+     *
+     * Uses Workerman\Timer::add(0, ...) to defer the blocking HTTP call to the
+     * next event-loop tick so the Workerman worker returns to its loop
+     * immediately. Falls back to synchronous execution when
+     * Workerman\Timer is unavailable (unit tests, CLI).
+     *
+     * @param MediaItem $mediaItem Media item that was played
+     * @param int $progressSecs Final playback position in seconds
+     * @param string $accessToken OAuth access token
+     * @param TraktApi $api Trakt API client
+     *
+     * @return void
+     */
+    private function scheduleAsyncScrobbleStop(MediaItem $mediaItem, int $progressSecs, string $accessToken, TraktApi $api): void
+    {
+        if (class_exists(\Workerman\Timer::class)) {
+            \Workerman\Timer::add(0, function () use ($mediaItem, $progressSecs, $accessToken, $api): void {
+                $this->executeScrobbleStop($mediaItem, $progressSecs, $accessToken, $api);
+            });
+        } else {
+            // Fallback: run synchronously (unit-test / CLI path)
+            $this->executeScrobbleStop($mediaItem, $progressSecs, $accessToken, $api);
+        }
+    }
+
+    /**
+     * B5: Execute a scrobble-stop call (called inside timer callback).
+     *
+     * Contains the full error-handling path: initial call, 401-triggered
+     * refresh-then-retry, and final error logging.
+     *
+     * @param MediaItem $mediaItem Media item that was played
+     * @param int $progressSecs Final playback position in seconds
+     * @param string $accessToken OAuth access token
+     * @param TraktApi $api Trakt API client
+     *
+     * @return void
+     */
+    private function executeScrobbleStop(MediaItem $mediaItem, int $progressSecs, string $accessToken, TraktApi $api): void
+    {
+        try {
+            $api->scrobbleStop($mediaItem, $progressSecs, $accessToken);
 
             $this->logger?->info('Trakt scrobble stop submitted', [
                 'title' => $mediaItem->name,
@@ -409,10 +517,6 @@ final class TraktPlugin implements LifecycleInterface
             $this->logger?->warning('Trakt: scrobble stop failed', [
                 'error' => $e->getMessage(),
             ]);
-        }
-
-        if ($event->reachedEnd && $this->watchHistory !== null) {
-            $this->syncToTrakt($event->mediaItemId, $event->finalPositionTicks);
         }
     }
 
