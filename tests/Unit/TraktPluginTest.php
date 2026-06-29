@@ -8,6 +8,7 @@ use Phlix\Plugins\Scrobbler\Trakt\HttpClientInterface;
 use Phlix\Plugins\Scrobbler\Trakt\TraktApi;
 use Phlix\Plugins\Scrobbler\Trakt\TraktApiException;
 use Phlix\Plugins\Scrobbler\Trakt\TraktAuthenticationException;
+use Phlix\Plugins\Scrobbler\Trakt\TokenCipher;
 use Phlix\Plugins\Scrobbler\Trakt\TraktPlugin;
 use Phlix\Plugins\Scrobbler\Trakt\TraktSettings;
 use Phlix\Plugins\Scrobbler\Trakt\TraktSettingsRepository;
@@ -468,14 +469,126 @@ final class TraktPluginTest extends TestCase
         $this->assertSame('coro-refresh', $settings->refreshToken);
     }
 
+    // --- S1: encrypt tokens at rest on the persist path ---------------------
+
+    /**
+     * When a cipher is wired, a token refresh persists CIPHERTEXT for the
+     * access/refresh tokens (never the raw rotated values) and the in-memory
+     * settings still hold the decrypted tokens for subsequent scrobbles.
+     */
+    public function testPersistedTokensAreEncryptedAtRest(): void
+    {
+        $repo = new RecordingSettingsRepository();
+        $api = new FakeTraktApi();
+        $api->refreshResult = [
+            'access_token' => 'rotated-access',
+            'refresh_token' => 'rotated-refresh',
+            'expires_in' => 7200,
+        ];
+        $cipher = new RecordingCipher();
+
+        $plugin = $this->makeWiredPlugin(
+            api: $api,
+            repo: $repo,
+            settings: $this->expiredSettings(),
+            cipher: $cipher,
+        );
+
+        $plugin->onPlaybackStopped($this->stopEvent());
+
+        $this->assertSame(1, $api->refreshCalls);
+        $this->assertNotEmpty($repo->saved, 'persistence writer must be invoked');
+
+        $last = $repo->saved[count($repo->saved) - 1];
+
+        // The STORED payload must be ciphertext, not the raw rotated tokens.
+        $this->assertNotSame('rotated-access', $last['access_token']);
+        $this->assertNotSame('rotated-refresh', $last['refresh_token']);
+        $this->assertStringStartsWith('ENC(', (string) $last['access_token']);
+        $this->assertStringStartsWith('ENC(', (string) $last['refresh_token']);
+        $this->assertStringNotContainsString('rotated-access', (string) $last['access_token']);
+
+        // The cipher actually encrypted both token fields.
+        $this->assertContains('rotated-access', $cipher->encrypted);
+        $this->assertContains('rotated-refresh', $cipher->encrypted);
+
+        // In-memory settings keep the decrypted token for the next scrobble.
+        $this->assertSame('rotated-access', $plugin->getSettings()->accessToken);
+
+        // And the stored ciphertext round-trips back through the cipher.
+        $this->assertSame('rotated-access', $cipher->decrypt((string) $last['access_token']));
+    }
+
+    /**
+     * Graceful degrade (S1): with NO cipher available the persist path stores
+     * the tokens as-is and does not crash; the suite's other tests already cover
+     * the rotation, this asserts the no-cipher storage is plaintext (and safe).
+     */
+    public function testPersistWithoutCipherStoresPlaintextWithoutCrashing(): void
+    {
+        $repo = new RecordingSettingsRepository();
+        $api = new FakeTraktApi();
+        $api->refreshResult = [
+            'access_token' => 'rotated-access',
+            'refresh_token' => 'rotated-refresh',
+            'expires_in' => 7200,
+        ];
+
+        // No cipher injected.
+        $plugin = $this->makeWiredPlugin(
+            api: $api,
+            repo: $repo,
+            settings: $this->expiredSettings(),
+            cipher: null,
+        );
+
+        $plugin->onPlaybackStopped($this->stopEvent());
+
+        $this->assertSame(1, $api->refreshCalls);
+        $this->assertNotEmpty($repo->saved);
+        $last = $repo->saved[count($repo->saved) - 1];
+
+        // Degrade: stored as-is (the host logs a warning separately).
+        $this->assertSame('rotated-access', $last['access_token']);
+        $this->assertSame('rotated-refresh', $last['refresh_token']);
+    }
+
+    /**
+     * The plugin's SPA projection never exposes the raw OAuth tokens.
+     */
+    public function testGetSettingsForSpaRedactsTokens(): void
+    {
+        $plugin = new TraktPlugin(
+            new TraktSettings(
+                accessToken: 'spa-secret-access',
+                refreshToken: 'spa-secret-refresh',
+                expiresAt: 1700000000,
+                username: 'carol',
+            ),
+            new NullLogger(),
+        );
+
+        $spa = $plugin->getSettingsForSpa();
+
+        $serialized = json_encode($spa);
+        $this->assertIsString($serialized);
+        $this->assertStringNotContainsString('spa-secret-access', $serialized);
+        $this->assertStringNotContainsString('spa-secret-refresh', $serialized);
+        $this->assertArrayNotHasKey('access_token', $spa);
+        $this->assertArrayNotHasKey('refresh_token', $spa);
+        $this->assertTrue($spa['has_tokens']);
+        $this->assertSame('carol', $spa['username']);
+    }
+
     // --- helpers ------------------------------------------------------------
 
     private function makeWiredPlugin(
         FakeTraktApi $api,
         ?RecordingSettingsRepository $repo,
         TraktSettings $settings,
+        ?TokenCipher $cipher = null,
     ): TraktPlugin {
-        $plugin = new TraktPlugin($settings, new NullLogger(), $api, $repo);
+        $plugin = new TraktPlugin($settings, new NullLogger(), $api, $repo, $cipher);
 
         // Wire enabled + a resolvable media item via a stub container, without
         // overwriting the injected API/repository or the supplied settings.
@@ -710,6 +823,39 @@ final class StubContainer implements \Psr\Container\ContainerInterface
     public function has(string $id): bool
     {
         return array_key_exists($id, $this->services);
+    }
+}
+
+/**
+ * Reversible, recording fake cipher: wraps plaintext as ENC(<base64>) so a test
+ * can prove the persisted value is ciphertext (transformed, not the raw token)
+ * while still round-tripping. Records each plaintext it encrypts and passes
+ * through any value not in its own wrapper format (legacy plaintext).
+ *
+ * @internal test seam
+ */
+final class RecordingCipher implements TokenCipher
+{
+    /** @var array<int, string> */
+    public array $encrypted = [];
+
+    public function encrypt(string $plain): string
+    {
+        $this->encrypted[] = $plain;
+
+        return 'ENC(' . base64_encode($plain) . ')';
+    }
+
+    public function decrypt(string $cipher): string
+    {
+        if (!str_starts_with($cipher, 'ENC(') || !str_ends_with($cipher, ')')) {
+            return $cipher;
+        }
+
+        $inner = substr($cipher, 4, -1);
+        $decoded = base64_decode($inner, true);
+
+        return $decoded === false ? $cipher : $decoded;
     }
 }
 

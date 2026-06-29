@@ -39,17 +39,35 @@ final class TraktSettings
     /**
      * Create settings from an array (as loaded from DB settings JSON).
      *
+     * When a {@see TokenCipher} is supplied, the stored `access_token` /
+     * `refresh_token` values are decrypted on the way in (they are written
+     * encrypted by {@see TraktSettings::toStorageArray()}). When no cipher is
+     * supplied — e.g. host has no encryption key, or a caller passing plaintext
+     * test data — the token fields are taken verbatim. The cipher's `decrypt()`
+     * also passes through any value it does not recognise as its own ciphertext,
+     * so legacy plaintext tokens written before encryption was enabled still
+     * load correctly.
+     *
      * @param array<string, mixed> $data Key-value array from settings_json
+     * @param TokenCipher|null $cipher Optional decryptor for the token fields
      *
      * @return self
      *
      * @since 0.14.0
      */
-    public static function fromArray(array $data): self
+    public static function fromArray(array $data, ?TokenCipher $cipher = null): self
     {
+        $accessToken = is_string($data['access_token'] ?? null) ? $data['access_token'] : null;
+        $refreshToken = is_string($data['refresh_token'] ?? null) ? $data['refresh_token'] : null;
+
+        if ($cipher !== null) {
+            $accessToken = $accessToken !== null ? $cipher->decrypt($accessToken) : null;
+            $refreshToken = $refreshToken !== null ? $cipher->decrypt($refreshToken) : null;
+        }
+
         return new self(
-            accessToken: is_string($data['access_token'] ?? null) ? $data['access_token'] : null,
-            refreshToken: is_string($data['refresh_token'] ?? null) ? $data['refresh_token'] : null,
+            accessToken: $accessToken,
+            refreshToken: $refreshToken,
             expiresAt: is_int($data['expires_at'] ?? null) ? $data['expires_at'] : null,
             syncEnabled: is_bool($data['sync_enabled'] ?? null) ? $data['sync_enabled'] : true,
             syncIntervalMinutes: is_int($data['sync_interval_minutes'] ?? null) ? $data['sync_interval_minutes'] : 30,
@@ -59,7 +77,13 @@ final class TraktSettings
     }
 
     /**
-     * Convert settings to an array for JSON serialization.
+     * Convert settings to the in-memory array (raw token values, no encryption).
+     *
+     * This is the plaintext representation used internally (e.g. re-applying
+     * settings through {@see TraktPlugin::configure()}). It MUST NOT be written
+     * verbatim to the database — use {@see TraktSettings::toStorageArray()} for
+     * the at-rest payload — and MUST NOT be returned to the admin SPA — use
+     * {@see TraktSettings::toSpaArray()} for that.
      *
      * @return array<string, mixed>
      *
@@ -75,6 +99,65 @@ final class TraktSettings
             'sync_interval_minutes' => $this->syncIntervalMinutes,
             'scrobble_enabled' => $this->scrobbleEnabled,
             'username' => $this->username,
+        ];
+    }
+
+    /**
+     * Convert settings to the AT-REST storage array (tokens encrypted).
+     *
+     * Identical to {@see TraktSettings::toArray()} except the `access_token`
+     * and `refresh_token` fields are encrypted with the supplied
+     * {@see TokenCipher} so the raw, long-lived OAuth credentials never land in
+     * `plugins.settings_json` as plaintext.
+     *
+     * Graceful degrade: when no cipher is supplied (host has no encryption key)
+     * the tokens are stored as-is. Callers should log a warning in that case.
+     *
+     * @param TokenCipher|null $cipher Optional encryptor for the token fields
+     *
+     * @return array<string, mixed>
+     *
+     * @since 0.14.0
+     */
+    public function toStorageArray(?TokenCipher $cipher = null): array
+    {
+        $data = $this->toArray();
+
+        if ($cipher === null) {
+            return $data;
+        }
+
+        if ($this->accessToken !== null) {
+            $data['access_token'] = $cipher->encrypt($this->accessToken);
+        }
+        if ($this->refreshToken !== null) {
+            $data['refresh_token'] = $cipher->encrypt($this->refreshToken);
+        }
+
+        return $data;
+    }
+
+    /**
+     * Convert settings to a REDACTED projection safe to return to the admin SPA.
+     *
+     * The raw OAuth token strings are NEVER included; instead a `has_tokens`
+     * boolean signals whether the account is connected. Only the
+     * user-facing/editable preferences and non-secret status fields are exposed.
+     *
+     * @return array<string, mixed>
+     *
+     * @since 0.14.0
+     */
+    public function toSpaArray(): array
+    {
+        return [
+            'username' => $this->username,
+            'sync_enabled' => $this->syncEnabled,
+            'sync_interval_minutes' => $this->syncIntervalMinutes,
+            'scrobble_enabled' => $this->scrobbleEnabled,
+            // Status only — never the raw tokens.
+            'has_tokens' => $this->hasTokens(),
+            'token_expires_at' => $this->expiresAt,
         ];
     }
 
