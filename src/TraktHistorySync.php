@@ -245,6 +245,11 @@ class TraktHistorySync
      * The metadata_json column stores external IDs like:
      * {"tmdb_id": "123", "imdb_id": "tt123", "tvdb_id": "456"}
      *
+     * Uses JSON_EXTRACT when available (MySQL 5.7+) for reliable extraction,
+     * falling back to LIKE pattern matching for older MySQL versions.
+     * All external ID values are escaped to prevent SQL injection via
+     * malformed ID strings.
+     *
      * @param string $idType tmdb, tvdb, or imdb
      * @param string $externalId The external ID value
      *
@@ -252,14 +257,77 @@ class TraktHistorySync
      */
     private function findMediaItemIdByExternalId(string $idType, string $externalId): ?string
     {
-        $likePattern = '%"' . $idType . '_id":"' . $externalId . '"%';
+        // Escape the external ID to prevent SQL injection in LIKE pattern
+        $escapedId = $this->db->real_escapeString($externalId);
+        $likePattern = '%"' . $idType . '_id":"' . $escapedId . '"%';
 
+        // Try JSON_EXTRACT first (MySQL 5.7+) for reliable extraction
+        // This avoids LIKE's fragility with JSON strings
+        $jsonPath = '$.' . $idType . '_id';
+        $result = $this->db->query(
+            "SELECT id FROM media_items WHERE JSON_EXTRACT(metadata_json, ?) = ? LIMIT 1",
+            [$jsonPath, $externalId]
+        );
+
+        if (is_array($result) && isset($result[0]['id'])) {
+            return (string) $result[0]['id'];
+        }
+
+        // Fallback to LIKE pattern matching for older MySQL or edge cases
+        // where the JSON value might be stored differently
         $result = $this->db->query(
             'SELECT id FROM media_items WHERE metadata_json LIKE ? LIMIT 1',
             [$likePattern]
         );
 
         if (is_array($result) && isset($result[0]['id'])) {
+            return (string) $result[0]['id'];
+        }
+
+        return null;
+    }
+
+    /**
+     * Find a local media item ID using title/year fallback matching.
+     *
+     * When external IDs don't resolve to a local item (e.g., different ID
+     * providers or metadata source mismatch), fall back to matching by
+     * title and year. This is less reliable but better than nothing.
+     *
+     * @param string $title Media title
+     * @param int|null $year Release year
+     * @param string $type movie or episode
+     *
+     * @return string|null Local media_items.id if found, null otherwise.
+     */
+    private function findMediaItemIdByTitleYear(string $title, ?int $year, string $type): ?string
+    {
+        if ($title === '') {
+            return null;
+        }
+
+        // Escape title for LIKE query
+        $escapedTitle = '%' . $this->db->real_escapeString($title) . '%';
+
+        if ($year !== null) {
+            $result = $this->db->query(
+                "SELECT id FROM media_items WHERE name LIKE ? AND metadata_json LIKE ? AND type = ? LIMIT 1",
+                [$escapedTitle, '%"year":"' . $year . '"%', $type]
+            );
+        } else {
+            $result = $this->db->query(
+                'SELECT id FROM media_items WHERE name LIKE ? AND type = ? LIMIT 1',
+                [$escapedTitle, $type]
+            );
+        }
+
+        if (is_array($result) && isset($result[0]['id'])) {
+            $this->logger->debug('TraktHistorySync: resolved media item via title/year fallback', [
+                'title' => $title,
+                'year' => $year,
+                'type' => $type,
+                'id' => $result[0]['id'],
+            ]);
             return (string) $result[0]['id'];
         }
 
@@ -336,5 +404,233 @@ class TraktHistorySync
             path: $path,
             metadata: $metadata
         );
+    }
+
+    /**
+     * Sync ratings from Trakt → Phlix.
+     *
+     * Pulls ratings from Trakt and updates local user ratings for matched items.
+     * Uses the same robust ID matching as history sync, with title/year fallback.
+     *
+     * @param string $profileId Profile ID to sync ratings for
+     *
+     * @return int Number of ratings updated
+     *
+     * @since 0.14.0
+     */
+    public function syncRatingsTraktToPhlix(string $profileId): int
+    {
+        if (!$this->settings->isConfigured()) {
+            $this->logger->debug('TraktHistorySync: plugin not configured, skipping ratings Trakt→Phlix');
+            return 0;
+        }
+
+        if (!$this->settings->syncEnabled) {
+            $this->logger->debug('TraktHistorySync: sync disabled, skipping ratings Trakt→Phlix');
+            return 0;
+        }
+
+        try {
+            $ratings = $this->api->getRatings(
+                $this->settings->username,
+                $this->settings->accessToken ?? ''
+            );
+        } catch (TraktApiException $e) {
+            $this->logger->warning('TraktHistorySync: failed to fetch Trakt ratings', [
+                'error' => $e->getMessage(),
+            ]);
+            return 0;
+        }
+
+        $updated = 0;
+
+        foreach ($ratings as $rating) {
+            if (!is_array($rating)) {
+                continue;
+            }
+
+            $mediaItemId = $this->findMediaItemIdFromRating($rating);
+            if ($mediaItemId === null) {
+                continue;
+            }
+
+            $ratingValue = $this->extractRatingValue($rating);
+            if ($ratingValue === null) {
+                continue;
+            }
+
+            // Update local rating via watch history
+            $this->updateLocalRating($profileId, $mediaItemId, $ratingValue);
+            $updated++;
+
+            $this->logger->debug('TraktHistorySync: synced rating from Trakt', [
+                'media_item_id' => $mediaItemId,
+                'rating' => $ratingValue,
+            ]);
+        }
+
+        $this->logger->info('TraktHistorySync: completed ratings Trakt→Phlix sync', [
+            'profile_id' => $profileId,
+            'ratings_updated' => $updated,
+        ]);
+
+        return $updated;
+    }
+
+    /**
+     * Find media item ID from a Trakt rating entry.
+     *
+     * Uses the same robust matching strategy as history sync, with
+     * title/year fallback for items not matched by external ID.
+     *
+     * @param array<mixed, mixed> $rating Trakt rating entry
+     *
+     * @return string|null Local media item ID if resolved
+     */
+    private function findMediaItemIdFromRating(array $rating): ?string
+    {
+        $movie = $rating['movie'] ?? null;
+        $episode = $rating['episode'] ?? null;
+
+        $ids = null;
+        $title = null;
+        $year = null;
+        $type = 'movie';
+
+        if (is_array($movie) && isset($movie['ids']) && is_array($movie['ids'])) {
+            $ids = $movie['ids'];
+            $title = $movie['title'] ?? null;
+            $year = isset($movie['year']) && is_numeric($movie['year']) ? (int) $movie['year'] : null;
+            $type = 'movie';
+        } elseif (is_array($episode) && isset($episode['ids']) && is_array($episode['ids'])) {
+            $ids = $episode['ids'];
+            $title = $episode['title'] ?? null;
+            $year = isset($episode['year']) && is_numeric($episode['year']) ? (int) $episode['year'] : null;
+            $type = 'episode';
+        }
+
+        if ($ids === null) {
+            return null;
+        }
+
+        // Try external ID matching first (most reliable)
+        foreach (['tmdb', 'tvdb', 'imdb'] as $idType) {
+            $externalId = $ids[$idType] ?? null;
+            if ($externalId === null || $externalId === '') {
+                continue;
+            }
+
+            $mediaItemId = $this->findMediaItemIdByExternalId($idType, (string) $externalId);
+            if ($mediaItemId !== null) {
+                return $mediaItemId;
+            }
+        }
+
+        // Fall back to title/year matching
+        if (is_string($title) && $title !== '') {
+            return $this->findMediaItemIdByTitleYear($title, $year, $type);
+        }
+
+        return null;
+    }
+
+    /**
+     * Extract the rating value from a Trakt rating entry.
+     *
+     * @param array<mixed, mixed> $rating Trakt rating entry
+     *
+     * @return int|null Rating value (1-10) or null if invalid
+     */
+    private function extractRatingValue(array $rating): ?int
+    {
+        $rated = $rating['rated_at'] ?? null;
+        $ratingValue = $rating['rating'] ?? null;
+
+        if (!is_numeric($ratingValue)) {
+            return null;
+        }
+
+        $value = (int) $ratingValue;
+        if ($value < 1 || $value > 10) {
+            return null;
+        }
+
+        return $value;
+    }
+
+    /**
+     * Update local rating for a media item.
+     *
+     * @param string $profileId Profile ID
+     * @param string $mediaItemId Local media item ID
+     * @param int $rating Rating value (1-10)
+     *
+     * @return void
+     */
+    private function updateLocalRating(string $profileId, string $mediaItemId, int $rating): void
+    {
+        // Rating is stored in watch_history as user_rating field
+        // This uses the same updateProgress mechanism but sets the rating
+        $this->watchHistory->updateProgress(
+            $profileId,
+            $mediaItemId,
+            0, // position
+            0, // duration
+            WatchHistory::STATUS_COMPLETED,
+            $rating
+        );
+    }
+
+    /**
+     * Sync a rating from Phlix → Trakt.
+     *
+     * Pushes a local rating to Trakt for a specific media item.
+     *
+     * @param string $mediaItemId Media item that was rated
+     * @param int $rating Rating value (1-10)
+     *
+     * @return bool True when successfully pushed to Trakt
+     *
+     * @since 0.14.0
+     */
+    public function syncRatingsPhlixToTrakt(string $mediaItemId, int $rating): bool
+    {
+        if (!$this->settings->isConfigured()) {
+            $this->logger->debug('TraktHistorySync: plugin not configured, skipping ratings Phlix→Trakt');
+            return false;
+        }
+
+        if (!$this->settings->syncEnabled) {
+            $this->logger->debug('TraktHistorySync: sync disabled, skipping ratings Phlix→Trakt');
+            return false;
+        }
+
+        $existing = $this->watchHistory->getForMediaItem('default', $mediaItemId);
+        if ($existing === null) {
+            $this->logger->debug('TraktHistorySync: no local history for item, skipping rating sync', [
+                'media_item_id' => $mediaItemId,
+            ]);
+            return false;
+        }
+
+        try {
+            $item = $this->buildMediaItem($mediaItemId, $existing);
+            $clampedRating = max(1, min(10, $rating));
+
+            $this->api->addRating($item, $clampedRating, $this->settings->accessToken ?? '');
+
+            $this->logger->info('TraktHistorySync: pushed rating to Trakt', [
+                'media_item_id' => $mediaItemId,
+                'rating' => $clampedRating,
+            ]);
+
+            return true;
+        } catch (TraktApiException $e) {
+            $this->logger->warning('TraktHistorySync: failed to push rating to Trakt', [
+                'media_item_id' => $mediaItemId,
+                'error' => $e->getMessage(),
+            ]);
+            return false;
+        }
     }
 }
