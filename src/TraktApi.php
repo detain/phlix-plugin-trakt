@@ -410,6 +410,195 @@ class TraktApi
     }
 
     /**
+     * Get all ratings for a user from Trakt.
+     *
+     * @param string $username Trakt username
+     * @param string $accessToken OAuth access token
+     * @param string $type Filter by type: movies, shows, episodes, all (default: all)
+     *
+     * @return array<mixed> Array of rated items with their ratings
+     *
+     * @throws TraktApiException|TraktAuthenticationException On API error
+     * @since 0.14.0
+     */
+    public function getRatings(string $username, string $accessToken, string $type = 'all'): array
+    {
+        $params = [];
+        if ($type !== 'all') {
+            $params['type'] = $type;
+        }
+
+        $response = $this->http->get(
+            self::BASE_URL . '/users/' . urlencode($username) . '/ratings',
+            $params,
+            $this->apiHeaders($accessToken)
+        );
+
+        $this->logger->debug('Trakt ratings response', [
+            'username' => $username,
+            'type' => $type,
+            'count' => count($response),
+        ]);
+
+        return $response;
+    }
+
+    /**
+     * Add a rating to a movie or episode on Trakt.
+     *
+     * @param MediaItem $item Media item to rate
+     * @param int $rating Rating value (1-10)
+     * @param string $accessToken OAuth access token
+     *
+     * @return array<string, mixed> API response
+     *
+     * @throws TraktApiException|TraktAuthenticationException On API error
+     * @since 0.14.0
+     */
+    public function addRating(MediaItem $item, int $rating, string $accessToken): array
+    {
+        $rating = max(1, min(10, $rating)); // Clamp to 1-10
+
+        $movie = null;
+        $episode = null;
+
+        if ($item->type === 'movie') {
+            $movie = [
+                'ids' => [
+                    'trakt' => $item->metadata['trakt_id'] ?? null,
+                    'slug' => $item->metadata['slug'] ?? null,
+                    'imdb' => $item->metadata['imdb_id'] ?? null,
+                    'tmdb' => $item->metadata['tmdb_id'] ?? null,
+                ],
+            ];
+        } elseif ($item->type === 'episode') {
+            $episode = [
+                'ids' => [
+                    'trakt' => $item->metadata['trakt_id'] ?? null,
+                    'tvdb' => $item->metadata['tvdb_id'] ?? null,
+                    'imdb' => $item->metadata['imdb_id'] ?? null,
+                    'tmdb' => $item->metadata['tmdb_id'] ?? null,
+                ],
+                'season' => $item->metadata['season_number'] ?? 1,
+                'number' => $item->metadata['episode_number'] ?? 1,
+            ];
+        }
+
+        $hasAnyId = ($item->type === 'movie' && ($movie['ids']['trakt'] ?? $movie['ids']['imdb'] ?? $movie['ids']['tmdb'] ?? null) !== null)
+            || ($item->type === 'episode' && ($episode['ids']['trakt'] ?? $episode['ids']['tvdb'] ?? $episode['ids']['imdb'] ?? $episode['ids']['tmdb'] ?? null) !== null);
+
+        if (!$hasAnyId) {
+            $this->logger->debug('Trakt rating skipped: no external ID available', [
+                'item' => $item->name,
+            ]);
+            return [
+                'added' => false,
+                'skipped' => true,
+            ];
+        }
+
+        $payload = [
+            'ratings' => [
+                [
+                    'movie' => $movie,
+                    'episode' => $episode,
+                    'rating' => $rating,
+                ],
+            ],
+        ];
+
+        $response = $this->http->post(
+            self::BASE_URL . '/sync/ratings',
+            $payload,
+            $this->apiHeaders($accessToken)
+        );
+
+        $this->logger->debug('Trakt add rating response', [
+            'item' => $item->name,
+            'rating' => $rating,
+            'response' => $response,
+        ]);
+
+        /** @var array<string, mixed> */
+        return $response;
+    }
+
+    /**
+     * Remove a rating from a movie or episode on Trakt.
+     *
+     * @param MediaItem $item Media item to unrate
+     * @param string $accessToken OAuth access token
+     *
+     * @return array<string, mixed> API response
+     *
+     * @throws TraktApiException|TraktAuthenticationException On API error
+     * @since 0.14.0
+     */
+    public function removeRating(MediaItem $item, string $accessToken): array
+    {
+        $movie = null;
+        $episode = null;
+
+        if ($item->type === 'movie') {
+            $movie = [
+                'ids' => [
+                    'trakt' => $item->metadata['trakt_id'] ?? null,
+                    'slug' => $item->metadata['slug'] ?? null,
+                    'imdb' => $item->metadata['imdb_id'] ?? null,
+                    'tmdb' => $item->metadata['tmdb_id'] ?? null,
+                ],
+            ];
+        } elseif ($item->type === 'episode') {
+            $episode = [
+                'ids' => [
+                    'trakt' => $item->metadata['trakt_id'] ?? null,
+                    'tvdb' => $item->metadata['tvdb_id'] ?? null,
+                    'imdb' => $item->metadata['imdb_id'] ?? null,
+                    'tmdb' => $item->metadata['tmdb_id'] ?? null,
+                ],
+                'season' => $item->metadata['season_number'] ?? 1,
+                'number' => $item->metadata['episode_number'] ?? 1,
+            ];
+        }
+
+        $hasAnyId = ($item->type === 'movie' && ($movie['ids']['trakt'] ?? $movie['ids']['imdb'] ?? $movie['ids']['tmdb'] ?? null) !== null)
+            || ($item->type === 'episode' && ($episode['ids']['trakt'] ?? $episode['ids']['tvdb'] ?? $episode['ids']['imdb'] ?? $episode['ids']['tmdb'] ?? null) !== null);
+
+        if (!$hasAnyId) {
+            $this->logger->debug('Trakt rating removal skipped: no external ID available', [
+                'item' => $item->name,
+            ]);
+            return [
+                'deleted' => false,
+                'skipped' => true,
+            ];
+        }
+
+        // DELETE uses query params for the IDs
+        $ids = $item->type === 'movie' ? $movie['ids'] : $episode['ids'];
+        $type = $item->type === 'movie' ? 'movies' : 'episodes';
+
+        $params = [
+            'type' => $type,
+            'ids' => implode(',', array_filter($ids, fn($v) => $v !== null)),
+        ];
+
+        $response = $this->http->post(
+            self::BASE_URL . '/sync/ratings/remove',
+            ['movies' => [$movie], 'episodes' => [$episode]],
+            $this->apiHeaders($accessToken)
+        );
+
+        $this->logger->debug('Trakt remove rating response', [
+            'item' => $item->name,
+            'response' => $response,
+        ]);
+
+        /** @var array<string, mixed> */
+        return $response;
+    }
+
+    /**
      * Get the configured redirect URI.
      *
      * @return string

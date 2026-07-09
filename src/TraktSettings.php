@@ -17,6 +17,15 @@ namespace Phlix\Plugins\Scrobbler\Trakt;
 final class TraktSettings
 {
     /**
+     * Proactive refresh buffer: refresh token when it expires within this many seconds.
+     *
+     * Trakt tokens typically expire in 3 months, but we refresh proactively to avoid
+     * edge-case failures. 5 minutes gives enough headroom for the HTTP round-trip
+     * to complete before the token actually expires.
+     */
+    private const TOKEN_REFRESH_BUFFER_SECONDS = 300;
+
+    /**
      * @param string|null $accessToken OAuth access token (null when not authenticated)
      * @param string|null $refreshToken OAuth refresh token (null when not authenticated)
      * @param int|null $expiresAt Unix timestamp when access token expires (null when not set)
@@ -177,7 +186,11 @@ final class TraktSettings
     }
 
     /**
-     * Whether the access token has expired.
+     * Whether the access token has expired or is about to expire.
+     *
+     * Uses a proactive refresh buffer ({@see TOKEN_REFRESH_BUFFER_SECONDS}) to
+     * refresh the token before it actually expires, preventing edge-case failures
+     * where the token expires mid-request.
      *
      * @return bool True when expired or no token exists
      *
@@ -189,7 +202,9 @@ final class TraktSettings
             return $this->accessToken === null;
         }
 
-        return time() >= $this->expiresAt;
+        // Proactive refresh: consider token "expired" when it will expire within
+        // the buffer window, so we refresh before the actual expiry.
+        return time() >= ($this->expiresAt - self::TOKEN_REFRESH_BUFFER_SECONDS);
     }
 
     /**
