@@ -73,8 +73,9 @@ final class TraktHistorySyncTest extends TestCase
 
         $calls = $db->getCalls();
         $this->assertCount(1, $calls);
-        $this->assertStringContainsString('SELECT id FROM media_items WHERE metadata_json LIKE', $calls[0]['sql']);
-        $this->assertSame(['%"tmdb_id":"123"%'], $calls[0]['params']);
+        // Now uses JSON_EXTRACT for robust JSON querying, fallback to LIKE if needed
+        $this->assertStringContainsString('JSON_EXTRACT', $calls[0]['sql']);
+        $this->assertSame(['$.tmdb_id', '123'], $calls[0]['params']);
     }
 
     public function testFindMediaItemIdReturnsNullWhenNoIdsMatch(): void
