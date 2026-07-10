@@ -24,21 +24,18 @@
             "type": "string",
             "default": null,
             "secret": true,
-            "managed": true,
             "description": "OAuth access token (encrypted at rest, managed automatically — never shown in the admin UI)"
         },
         "refresh_token": {
             "type": "string",
             "default": null,
             "secret": true,
-            "managed": true,
             "description": "OAuth refresh token (encrypted at rest, managed automatically — never shown in the admin UI)"
         },
         "expires_at": {
             "type": "integer",
             "default": null,
             "secret": true,
-            "managed": true,
             "description": "Access token expiry timestamp (managed automatically — never shown in the admin UI)"
         },
         "sync_enabled": {
