@@ -35,14 +35,21 @@ php bin/phlix plugin:install https://github.com/detain/phlix-plugin-trakt
 
 ## Settings
 
-| Setting | Type | Description |
-|---|---|---|
-| `enabled` | bool | Enable Trakt scrobbling. |
-| `username` | string | Your Trakt username. |
-| `access_token` / `refresh_token` / `expires_at` | — | OAuth tokens (managed automatically). |
-| `sync_enabled` | bool | Enable two-way watch-history sync. |
-| `sync_interval_minutes` | int | How often to sync Trakt history into Phlix (minutes). |
-| `scrobble_enabled` | bool | Scrobble on playback events. |
+| Setting | Type | Required | Secret | Default | Description |
+|---|---|---|---|---|---|
+| `enabled` | boolean | No | No | `false` | Master on/off for Trakt scrobbling and sync. Optional; default off. |
+| `username` | string | No | No | `""` | Display-only: the Trakt account Phlix is linked to (set during authorization). |
+| `access_token` | string | No | Yes | `null` | Obtained automatically when you authorize Phlix with Trakt — you do not enter this by hand. Create an [API app](https://trakt.tv/oauth/applications) only if you self-host credentials. |
+| `refresh_token` | string | No | Yes | `null` | Set automatically during authorization; used to renew the access token. Not entered by hand. |
+| `expires_at` | integer | No | Yes | `null` | Unix timestamp when the access token expires. Managed automatically. |
+| `sync_enabled` | boolean | No | No | `true` | Sync watched state with Trakt. Optional; default on. |
+| `sync_interval_minutes` | integer | No | No | `30` | How often to sync with Trakt. Optional; default 30. |
+| `scrobble_enabled` | boolean | No | No | `true` | Report play/pause/stop to Trakt as you watch. Optional; default on. |
+
+> **`access_token` / `refresh_token` / `expires_at` are set automatically via the
+> Trakt authorization (OAuth) flow — you never enter them by hand.** Create an API
+> application at <https://trakt.tv/oauth/applications> only if you self-host your own
+> Trakt credentials.
 
 ## Development
 

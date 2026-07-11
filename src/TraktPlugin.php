@@ -7,6 +7,7 @@ namespace Phlix\Plugins\Scrobbler\Trakt;
 use Phlix\Auth\WatchHistory;
 use Phlix\Media\Library\ItemRepository;
 use Phlix\Media\Library\MediaItem;
+use Phlix\Shared\Plugin\ConfigurableInterface;
 use Phlix\Shared\Plugin\LifecycleInterface;
 use Phlix\Shared\Events\Playback\PlaybackPaused;
 use Phlix\Shared\Events\Playback\PlaybackResumed;
@@ -48,7 +49,7 @@ use Workerman\MySQL\Connection;
  * @package Phlix\Plugins\Scrobbler\Trakt
  * @since 0.14.0
  */
-final class TraktPlugin implements LifecycleInterface
+final class TraktPlugin implements LifecycleInterface, ConfigurableInterface
 {
     /**
      * Plugin type identifier used in the plugin manifest.
