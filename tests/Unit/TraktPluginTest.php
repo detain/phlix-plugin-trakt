@@ -16,6 +16,7 @@ use Phlix\Shared\Events\Playback\PlaybackPaused;
 use Phlix\Shared\Events\Playback\PlaybackResumed;
 use Phlix\Shared\Events\Playback\PlaybackStarted;
 use Phlix\Shared\Events\Playback\PlaybackStopped;
+use Phlix\Shared\Plugin\ConfigurableInterface;
 use PHPUnit\Framework\TestCase;
 use Psr\Log\NullLogger;
 
@@ -35,6 +36,13 @@ final class TraktPluginTest extends TestCase
         $this->assertSame('onPlaybackStopped', $events[PlaybackStopped::class]);
         $this->assertSame('onPlaybackPaused', $events[PlaybackPaused::class]);
         $this->assertSame('onPlaybackResumed', $events[PlaybackResumed::class]);
+    }
+
+    public function testImplementsConfigurableInterface(): void
+    {
+        $plugin = new TraktPlugin(new TraktSettings(), new NullLogger());
+
+        $this->assertInstanceOf(ConfigurableInterface::class, $plugin);
     }
 
     public function testConfigureStoresSettings(): void

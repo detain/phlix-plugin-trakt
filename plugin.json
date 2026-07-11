@@ -1,7 +1,7 @@
 {
     "name": "phlix-plugin-trakt",
-    "version": "1.1.0",
-    "phlix_min_server_version": "0.14.0",
+    "version": "1.2.0",
+    "phlix_min_server_version": "1.2.0",
     "type": "scrobbler",
     "entry": "Phlix\\Plugins\\Scrobbler\\Trakt\\TraktPlugin",
     "events": [
@@ -13,45 +13,63 @@
         "enabled": {
             "type": "boolean",
             "default": false,
-            "description": "Enable Trakt scrobbling"
+            "required": false,
+            "label": "Enable Trakt",
+            "description": "Master on/off for Trakt scrobbling and sync. Optional; default off."
         },
         "username": {
             "type": "string",
             "default": "",
-            "description": "Trakt username"
+            "required": false,
+            "label": "Trakt Username",
+            "description": "Display-only: the Trakt account Phlix is linked to (set during authorization)."
         },
         "access_token": {
             "type": "string",
             "default": null,
             "secret": true,
-            "description": "OAuth access token (encrypted at rest, managed automatically — never shown in the admin UI)"
+            "required": false,
+            "label": "Access Token",
+            "description": "Obtained automatically when you authorize Phlix with Trakt — you do not enter this by hand. Create an API app only if you self-host credentials.",
+            "link": "https://trakt.tv/oauth/applications",
+            "link_text": "Trakt API applications"
         },
         "refresh_token": {
             "type": "string",
             "default": null,
             "secret": true,
-            "description": "OAuth refresh token (encrypted at rest, managed automatically — never shown in the admin UI)"
+            "required": false,
+            "label": "Refresh Token",
+            "description": "Set automatically during authorization; used to renew the access token. Not entered by hand."
         },
         "expires_at": {
             "type": "integer",
             "default": null,
             "secret": true,
-            "description": "Access token expiry timestamp (managed automatically — never shown in the admin UI)"
+            "required": false,
+            "label": "Token Expiry",
+            "description": "Unix timestamp when the access token expires. Managed automatically."
         },
         "sync_enabled": {
             "type": "boolean",
             "default": true,
-            "description": "Enable two-way watch history sync"
+            "required": false,
+            "label": "Enable library sync",
+            "description": "Sync watched state with Trakt. Optional; default on."
         },
         "sync_interval_minutes": {
             "type": "integer",
             "default": 30,
-            "description": "How often to sync Trakt history to Phlix (minutes)"
+            "required": false,
+            "label": "Sync interval (minutes)",
+            "description": "How often to sync with Trakt. Optional; default 30."
         },
         "scrobble_enabled": {
             "type": "boolean",
             "default": true,
-            "description": "Enable scrobbling on playback events"
+            "required": false,
+            "label": "Enable scrobbling",
+            "description": "Report play/pause/stop to Trakt as you watch. Optional; default on."
         }
     }
 }
