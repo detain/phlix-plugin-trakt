@@ -1,13 +1,14 @@
 {
     "name": "phlix-plugin-trakt",
-    "version": "1.2.0",
+    "version": "1.2.1",
     "phlix_min_server_version": "1.2.0",
     "type": "scrobbler",
     "entry": "Phlix\\Plugins\\Scrobbler\\Trakt\\TraktPlugin",
     "events": [
         "phlix.playback.started",
-        "phlix.playback.stopped",
-        "phlix.playback.progress"
+        "phlix.playback.paused",
+        "phlix.playback.resumed",
+        "phlix.playback.stopped"
     ],
     "settings": {
         "enabled": {

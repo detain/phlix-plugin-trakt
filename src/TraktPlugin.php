@@ -21,8 +21,9 @@ use Workerman\MySQL\Connection;
 /**
  * Trakt.tv scrobbler plugin entry class.
  *
- * Subscribes to PlaybackStarted and PlaybackStopped events and submits
- * scrobble data to Trakt.tv using the 3-state scrobble protocol (start/stop).
+ * Subscribes to PlaybackStarted, PlaybackPaused, PlaybackResumed, and
+ * PlaybackStopped events and submits scrobble data to Trakt.tv using the
+ * 3-state scrobble protocol (start/pause/stop; resume re-sends "start").
  *
  * Also handles two-way watch history sync:
  * - Phlix → Trakt: On PlaybackStopped with ≥ 90% completion
