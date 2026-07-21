@@ -1,6 +1,6 @@
 {
     "name": "phlix-plugin-trakt",
-    "version": "1.2.1",
+    "version": "1.3.0",
     "phlix_min_server_version": "1.2.0",
     "type": "scrobbler",
     "entry": "Phlix\\Plugins\\Scrobbler\\Trakt\\TraktPlugin",
@@ -32,7 +32,7 @@
             "required": false,
             "label": "Access Token",
             "description": "Obtained automatically when you authorize Phlix with Trakt — you do not enter this by hand. Create an API app only if you self-host credentials.",
-            "link": "https://trakt.tv/oauth/applications",
+            "link": "https://app.trakt.tv/settings/apps/api/new",
             "link_text": "Trakt API applications"
         },
         "refresh_token": {

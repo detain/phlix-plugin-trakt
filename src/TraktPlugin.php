@@ -1170,11 +1170,30 @@ final class TraktPlugin implements LifecycleInterface, ConfigurableInterface
     }
 
     /**
+     * Resolve the configured sync interval, in seconds.
+     *
+     * The `sync_interval_minutes` setting was parsed into
+     * {@see TraktSettings::$syncIntervalMinutes} and then IGNORED — the timer used
+     * the hardcoded {@see self::SYNC_INTERVAL_SEC} constant, so changing the
+     * setting in the admin UI did nothing. This makes it real.
+     *
+     * Clamped to a one-minute floor: the value reaches us from admin input, and a
+     * zero or negative interval would arm a runaway timer inside a resident
+     * Workerman worker.
+     */
+    private function syncIntervalSeconds(): int
+    {
+        $minutes = $this->settings->syncIntervalMinutes;
+
+        return $minutes >= 1 ? $minutes * 60 : self::SYNC_INTERVAL_SEC;
+    }
+
+    /**
      * B8: Schedule periodic Trakt→Phlix history sync.
      *
-     * Uses Workerman\Timer::add() to run the sync every SYNC_INTERVAL_SEC
-     * (30 minutes). Gracefully no-ops when Workerman\Timer is unavailable
-     * (unit tests, CLI) or when sync is disabled.
+     * Uses Workerman\Timer::add() to run the sync every
+     * {@see self::syncIntervalSeconds()}. Gracefully no-ops when
+     * Workerman\Timer is unavailable (unit tests, CLI) or when sync is disabled.
      *
      * @param ContainerInterface $container Host PSR-11 container
      *
@@ -1187,7 +1206,7 @@ final class TraktPlugin implements LifecycleInterface, ConfigurableInterface
         }
 
         try {
-            \Workerman\Timer::add(self::SYNC_INTERVAL_SEC, function (): void {
+            \Workerman\Timer::add($this->syncIntervalSeconds(), function (): void {
                 $this->runScheduledSync();
             });
         } catch (\Throwable) {

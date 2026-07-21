@@ -56,6 +56,70 @@ class TraktHistorySync
      *
      * @since 0.14.0
      */
+    /** Items requested per Trakt history page. */
+    private const HISTORY_PAGE_SIZE = 100;
+
+    /**
+     * Hard ceiling on pages fetched in one sync.
+     *
+     * 100 pages x 100 items = 10,000 watched entries, comfortably above any real
+     * library. This exists so a malformed API response that never returns a short
+     * page cannot spin forever inside a resident Workerman worker.
+     */
+    private const HISTORY_MAX_PAGES = 100;
+
+    /**
+     * Fetch the user's COMPLETE watched history, following pagination.
+     *
+     * Previously this took only page 1 with a limit of 100, so any user with more
+     * than 100 watched items had the remainder silently dropped — the sync
+     * reported success having imported a truncated history.
+     *
+     * Stops at the first short page (fewer items than requested), which is the
+     * end-of-results signal, and is bounded by {@see self::HISTORY_MAX_PAGES}.
+     *
+     * @return array<mixed> Every watched item across all pages.
+     *
+     * @throws TraktApiException On API error.
+     */
+    private function fetchAllWatchedHistory(): array
+    {
+        $all = [];
+
+        for ($page = 1; $page <= self::HISTORY_MAX_PAGES; $page++) {
+            $batch = $this->api->getWatchedHistory(
+                $this->settings->username,
+                $page,
+                self::HISTORY_PAGE_SIZE,
+                $this->settings->accessToken ?? ''
+            );
+
+            $count = count($batch);
+            if ($count === 0) {
+                break;
+            }
+
+            foreach ($batch as $item) {
+                $all[] = $item;
+            }
+
+            // A short page means there is no next one.
+            if ($count < self::HISTORY_PAGE_SIZE) {
+                return $all;
+            }
+        }
+
+        // Only reachable by hitting the page cap, which means the history is
+        // larger than we are willing to pull in one pass. Say so — a silently
+        // truncated import is the defect this method exists to fix.
+        $this->logger->warning('TraktHistorySync: hit the page cap; history may be incomplete', [
+            'pages_fetched' => self::HISTORY_MAX_PAGES,
+            'items_fetched' => count($all),
+        ]);
+
+        return $all;
+    }
+
     public function syncTraktToPhlix(string $profileId): int
     {
         if (!$this->settings->isConfigured()) {
@@ -69,12 +133,7 @@ class TraktHistorySync
         }
 
         try {
-            $history = $this->api->getWatchedHistory(
-                $this->settings->username,
-                1,
-                100,
-                $this->settings->accessToken ?? ''
-            );
+            $history = $this->fetchAllWatchedHistory();
         } catch (TraktApiException $e) {
             $this->logger->warning('TraktHistorySync: failed to fetch Trakt history', [
                 'error' => $e->getMessage(),
