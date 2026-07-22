@@ -282,16 +282,21 @@ class TraktApi
             ];
         }
 
-        $payload = [
-            'action' => $action,
-            'progress' => $progress,
-            'movie' => $movie,
-            'episode' => $episode,
-        ];
+        // Trakt's scrobble endpoint encodes the action in the URL path
+        // (/scrobble/start|pause|stop) — NOT the body — and the body carries
+        // EITHER a `movie` OR an `episode` object plus `progress`. Sending the
+        // action in the body or a null sibling key is rejected/ignored by Trakt,
+        // and posting to /scrobble/movie|episode (the previous behaviour) 404s.
+        $payload = ['progress' => $progress];
+        if ($movie !== null) {
+            $payload['movie'] = $movie;
+        } elseif ($episode !== null) {
+            $payload['episode'] = $episode;
+        }
 
         try {
             $response = $this->http->post(
-                self::BASE_URL . '/scrobble/' . ($movie !== null ? 'movie' : 'episode'),
+                self::BASE_URL . '/scrobble/' . $action,
                 $payload,
                 $this->apiHeaders($accessToken)
             );

@@ -38,6 +38,89 @@ final class TraktPluginTest extends TestCase
         $this->assertSame('onPlaybackResumed', $events[PlaybackResumed::class]);
     }
 
+    /**
+     * subscribedEvents() must be an exact bijection with the handler methods:
+     * the event set is EXACTLY the four host-dispatched playback events, every
+     * subscribed handler EXISTS and is public, and each handler's single
+     * parameter is type-hinted to the very event class it is mapped from (no
+     * event without a handler, no handler subscribed to the wrong event).
+     *
+     * This locks the resolved "4-events" answer (Trakt's 3-state protocol:
+     * start/pause/stop + resume→start, mapped onto the four events the host
+     * fires from PlaybackController) and guards against the stale "2-event"
+     * shape that the server-embedded copy still carries.
+     */
+    public function testSubscribedEventsFormBijectionWithHandlers(): void
+    {
+        $plugin = new TraktPlugin(new TraktSettings(), new NullLogger());
+        $events = $plugin->subscribedEvents();
+
+        $expected = [
+            PlaybackStarted::class => 'onPlaybackStarted',
+            PlaybackPaused::class => 'onPlaybackPaused',
+            PlaybackResumed::class => 'onPlaybackResumed',
+            PlaybackStopped::class => 'onPlaybackStopped',
+        ];
+
+        // Exact key set — no event without a handler, no extra event.
+        $this->assertEqualsCanonicalizing(array_keys($expected), array_keys($events));
+
+        $reflection = new \ReflectionObject($plugin);
+        foreach ($events as $eventClass => $handler) {
+            $this->assertIsString($handler);
+            $this->assertSame($expected[$eventClass], $handler, "wrong handler for {$eventClass}");
+
+            // Handler must exist and be public.
+            $this->assertTrue($reflection->hasMethod($handler), "missing handler {$handler}");
+            $method = $reflection->getMethod($handler);
+            $this->assertTrue($method->isPublic(), "handler {$handler} not public");
+
+            // Handler's single parameter must be typed to the mapped event class.
+            $params = $method->getParameters();
+            $this->assertCount(1, $params, "handler {$handler} must take exactly one arg");
+            $type = $params[0]->getType();
+            $this->assertInstanceOf(\ReflectionNamedType::class, $type);
+            $this->assertSame($eventClass, $type->getName(), "handler {$handler} typed to wrong event");
+        }
+    }
+
+    /**
+     * The boot-safe WIRE step must perform NO network/token I/O. onEnable()
+     * resolves host services + constructs the API client + arms the sync timer,
+     * but must never hit Trakt (no scrobble, no token refresh, no history pull).
+     *
+     * We inject a FakeTraktApi (which counts every network call) and a fresh
+     * connected settings profile whose token is EXPIRED — the strongest trap,
+     * because a careless onEnable that eagerly refreshed the token would flip a
+     * counter here. After onEnable() every network counter must still be zero.
+     */
+    public function testOnEnableDoesNoBlockingIo(): void
+    {
+        $api = new FakeTraktApi();
+
+        $settings = new TraktSettings(
+            accessToken: 'old-access',
+            refreshToken: 'old-refresh',
+            expiresAt: time() - 3600, // expired: tempts an eager refresh
+            syncEnabled: true,
+            username: 'testuser',
+        );
+
+        $plugin = new TraktPlugin($settings, new NullLogger(), $api, new RecordingSettingsRepository());
+
+        $container = new StubContainer([
+            \Phlix\Media\Library\ItemRepository::class => new FakeItemRepository(),
+            \Phlix\Auth\WatchHistory::class => null,
+        ]);
+
+        $plugin->onEnable($container);
+
+        $this->assertSame(0, $api->refreshCalls, 'onEnable must not refresh the OAuth token');
+        $this->assertSame(0, $api->scrobbleStartCalls, 'onEnable must not scrobble');
+        $this->assertSame(0, $api->scrobbleStopCalls, 'onEnable must not scrobble');
+        $this->assertSame(0, $api->scrobblePauseCalls, 'onEnable must not scrobble');
+    }
+
     public function testImplementsConfigurableInterface(): void
     {
         $plugin = new TraktPlugin(new TraktSettings(), new NullLogger());

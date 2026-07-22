@@ -212,6 +212,60 @@ final class TraktApiTest extends TestCase
         $this->assertSame('Bearer history-token', $http->lastHeaders['Authorization'] ?? null);
     }
 
+    public function testScrobbleStartPostsToStartEndpointWithMoviePayload(): void
+    {
+        $http = new MockHttpClient([['action' => 'start', 'watched_at' => '2026-06-28T00:00:00Z']]);
+        $api = new TraktApi($http, self::CLIENT_ID, self::CLIENT_SECRET, new NullLogger());
+
+        $api->scrobbleStart($this->makeMovieItem(), 42, 'scrobble-token');
+
+        // Action is in the URL path, NOT the body (Trakt scrobble contract).
+        $this->assertSame('POST', $http->lastMethod);
+        $this->assertSame('https://api.trakt.tv/scrobble/start', $http->lastUrl);
+        // Body carries progress + the movie object, and MUST NOT carry `action`
+        // or a null `episode` sibling key.
+        $this->assertSame(42, $http->lastData['progress'] ?? null);
+        $this->assertArrayHasKey('movie', $http->lastData);
+        $this->assertArrayNotHasKey('episode', $http->lastData);
+        $this->assertArrayNotHasKey('action', $http->lastData);
+        $this->assertSame(1, $http->lastData['movie']['ids']['trakt'] ?? null);
+    }
+
+    public function testScrobbleStopPostsToStopEndpoint(): void
+    {
+        $http = new MockHttpClient([['action' => 'stop', 'watched_at' => '2026-06-28T00:00:00Z']]);
+        $api = new TraktApi($http, self::CLIENT_ID, self::CLIENT_SECRET, new NullLogger());
+
+        $api->scrobbleStop($this->makeMovieItem(), 99, 'scrobble-token');
+
+        $this->assertSame('https://api.trakt.tv/scrobble/stop', $http->lastUrl);
+        $this->assertSame(99, $http->lastData['progress'] ?? null);
+    }
+
+    public function testScrobblePausePostsEpisodePayloadToPauseEndpoint(): void
+    {
+        $http = new MockHttpClient([['action' => 'pause', 'watched_at' => '2026-06-28T00:00:00Z']]);
+        $api = new TraktApi($http, self::CLIENT_ID, self::CLIENT_SECRET, new NullLogger());
+
+        $item = new \Phlix\Media\Library\MediaItem(
+            id: 'ep-1',
+            name: 'Test Episode',
+            type: 'episode',
+            path: '/tv/show/s01e02.mkv',
+            metadata: ['tvdb_id' => 555, 'season_number' => 1, 'episode_number' => 2],
+        );
+
+        $api->scrobblePause($item, 15, 'scrobble-token');
+
+        $this->assertSame('https://api.trakt.tv/scrobble/pause', $http->lastUrl);
+        // Episode item → episode key present, movie key absent.
+        $this->assertArrayHasKey('episode', $http->lastData);
+        $this->assertArrayNotHasKey('movie', $http->lastData);
+        $this->assertArrayNotHasKey('action', $http->lastData);
+        $this->assertSame(555, $http->lastData['episode']['ids']['tvdb'] ?? null);
+        $this->assertSame(2, $http->lastData['episode']['number'] ?? null);
+    }
+
     /**
      * Build a minimal movie MediaItem fixture for scrobble/history calls.
      *

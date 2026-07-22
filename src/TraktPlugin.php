@@ -165,6 +165,19 @@ final class TraktPlugin implements LifecycleInterface, ConfigurableInterface
     }
 
     /**
+     * Boot-safe "WIRE" step — MUST NOT perform blocking I/O.
+     *
+     * This is the safe half of the deliberate wire/connect split (plan_plugins
+     * §2 F1(b)): onEnable only resolves host services from the container and
+     * constructs cheap objects (the API client, the token cipher, the periodic
+     * sync timer). It performs NO network calls, NO OAuth token exchange and NO
+     * DB queries — the container resolves are object lookups, and the timer is
+     * merely armed, not run. All actual network/token work ("CONNECT") is
+     * deferred to first use inside the event handlers via
+     * {@see TraktPlugin::ensureFreshToken()} (lazy refresh on the first scrobble)
+     * and the timer tick. This is why the Trakt plugin is safe to activate at
+     * worker boot where blocking-onEnable plugins (anidb/omdb/lastfm) are not.
+     *
      * @param ContainerInterface $container Host PSR-11 container
      *
      * @return void
@@ -173,6 +186,7 @@ final class TraktPlugin implements LifecycleInterface, ConfigurableInterface
      */
     public function onEnable(ContainerInterface $container): void
     {
+        // --- WIRE: resolve host services (object lookups; no network/DB I/O) ---
         if ($this->logger instanceof NullLogger) {
             $logger = $container->get(LoggerInterface::class);
             $this->logger = $logger instanceof LoggerInterface ? $logger : new NullLogger();
@@ -197,9 +211,12 @@ final class TraktPlugin implements LifecycleInterface, ConfigurableInterface
         $this->resolveSettingsRepository($container);
         $this->resolveTokenCipher($container);
 
+        // WIRE: construct the API client only (no auth exchange, no request).
         $this->initApi();
 
-        // B8: Schedule periodic Trakt→Phlix history sync (every 30 minutes)
+        // WIRE: arm the periodic Trakt→Phlix history sync timer. This only
+        // schedules the tick; the CONNECT work (token refresh + HTTP pull) runs
+        // later, inside runScheduledSync(), never here at boot.
         $this->schedulePeriodicSync($container);
     }
 
