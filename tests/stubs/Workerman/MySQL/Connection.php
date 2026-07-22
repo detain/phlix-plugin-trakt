@@ -49,6 +49,27 @@ class Connection
         // In production, this properly escapes SQL special characters
         return str_replace(["'", '"', '\\', "\0"], ["''", '\\"', '\\\\', ''], $str);
     }
+
+    /**
+     * Begin a transaction (no-op stub).
+     */
+    public function beginTrans(): void
+    {
+    }
+
+    /**
+     * Commit the current transaction (no-op stub).
+     */
+    public function commitTrans(): void
+    {
+    }
+
+    /**
+     * Roll back the current transaction (no-op stub).
+     */
+    public function rollBackTrans(): void
+    {
+    }
 }
 
 /**

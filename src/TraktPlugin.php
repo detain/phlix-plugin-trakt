@@ -50,12 +50,22 @@ use Workerman\MySQL\Connection;
  * @package Phlix\Plugins\Scrobbler\Trakt
  * @since 0.14.0
  */
-final class TraktPlugin implements LifecycleInterface, ConfigurableInterface
+class TraktPlugin implements LifecycleInterface, ConfigurableInterface
 {
     /**
      * Plugin type identifier used in the plugin manifest.
      */
     public const PLUGIN_TYPE = 'scrobbler';
+
+    /**
+     * Default profile reconciled by the two-way sync paths.
+     *
+     * Single-profile for now (per-profile sync is future work); shared by the
+     * push path ({@see self::syncToTrakt()}), the scheduled pull tick
+     * ({@see self::runScheduledSync()}) and the on-demand pull entry point
+     * ({@see self::syncHistoryFromTrakt()}) so the three cannot drift.
+     */
+    public const DEFAULT_PROFILE_ID = 'default';
 
     /**
      * Interval for periodic Trakt→Phlix history sync (30 minutes).
@@ -310,6 +320,57 @@ final class TraktPlugin implements LifecycleInterface, ConfigurableInterface
     }
 
     /**
+     * Run a Trakt → Phlix watched-history pull for the given profile.
+     *
+     * On-demand entry point for the resident-worker pull-sync Timer armed in
+     * the host's `start.php`. It mirrors the push path {@see self::syncToTrakt()}:
+     * it builds a {@see TraktHistorySync} from the plugin's current
+     * (DB-persisted) settings + collaborators and delegates the actual
+     * reconciliation to {@see TraktHistorySync::syncTraktToPhlix()} — this method
+     * adds NO reconciliation logic of its own (resume positions and pagination
+     * live inside the sync).
+     *
+     * The resident server resolves a fresh entry instance each tick which
+     * applies the persisted settings but does NOT call {@see self::onEnable()},
+     * so this method wires its runtime collaborators itself (idempotently) when
+     * they are missing. onEnable() only resolves container services + builds the
+     * (boot-safe, no-I/O) API client and arms the timer, so it is safe to call
+     * here on the sync cadence — it performs NO blocking network/token work.
+     *
+     * @param \Psr\Container\ContainerInterface $container Host container for
+     *     collaborator lookup.
+     * @param string $profileId Profile to reconcile history into. Defaults to the
+     *     single-profile {@see self::DEFAULT_PROFILE_ID}, consistent with the push
+     *     path; multi-profile is a future extension.
+     *
+     * @return int Number of local history entries written (0 when not
+     *     configured/enabled or two-way sync is disabled).
+     *
+     * @since 1.4.0
+     */
+    public function syncHistoryFromTrakt(
+        \Psr\Container\ContainerInterface $container,
+        string $profileId = self::DEFAULT_PROFILE_ID,
+    ): int {
+        if ($this->api === null || $this->watchHistory === null || $this->db === null) {
+            $this->onEnable($container);
+        }
+
+        if (!$this->isConfigured() || !$this->settings->syncEnabled) {
+            return 0;
+        }
+
+        // Defensive: onEnable() leaves these null when operator credentials are
+        // absent (initApi() no-ops) or a container binding is missing. Without
+        // them a TraktHistorySync cannot be built, so skip this cycle.
+        if ($this->api === null || $this->watchHistory === null || $this->db === null) {
+            return 0;
+        }
+
+        return $this->makeHistorySync()->syncTraktToPhlix($profileId);
+    }
+
+    /**
      * Return the event subscriptions for this plugin.
      *
      * @return array<class-string, string|callable>
@@ -354,7 +415,7 @@ final class TraktPlugin implements LifecycleInterface, ConfigurableInterface
             return;
         }
 
-        $progressSecs = (int)($event->positionTicks / 10_000_000);
+        $progressPercent = $this->computeProgressPercent($mediaItem, $event->positionTicks);
 
         // B5: Ensure token is fresh BEFORE scheduling async call.
         // Token refresh is synchronous but fast (single HTTP round-trip to Trakt).
@@ -369,7 +430,7 @@ final class TraktPlugin implements LifecycleInterface, ConfigurableInterface
         // Schedule on next event-loop tick so the worker returns to its loop
         // immediately. Falls back to synchronous execution when Workerman\Timer
         // is unavailable (e.g. CLI, unit tests outside a Workerman process).
-        $this->scheduleAsyncScrobbleStart($mediaItem, $progressSecs, $accessToken, $api);
+        $this->scheduleAsyncScrobbleStart($mediaItem, $progressPercent, $accessToken, $api);
     }
 
     /**
@@ -401,7 +462,7 @@ final class TraktPlugin implements LifecycleInterface, ConfigurableInterface
             return;
         }
 
-        $progressSecs = (int)($event->finalPositionTicks / 10_000_000);
+        $progressPercent = $this->computeProgressPercent($mediaItem, $event->finalPositionTicks);
 
         // B5: Ensure token is fresh BEFORE scheduling async call.
         $this->ensureFreshToken();
@@ -411,7 +472,7 @@ final class TraktPlugin implements LifecycleInterface, ConfigurableInterface
         $api = $this->api;
 
         // B5: Non-blocking async scrobble via Workerman\Timer::add(0, ...).
-        $this->scheduleAsyncScrobbleStop($mediaItem, $progressSecs, $accessToken, $api);
+        $this->scheduleAsyncScrobbleStop($mediaItem, $progressPercent, $accessToken, $api);
 
         // syncToTrakt is synchronous (DB writes + potential API call) but only
         // runs when reachedEnd=true, which is already a terminal event for
@@ -447,7 +508,7 @@ final class TraktPlugin implements LifecycleInterface, ConfigurableInterface
             return;
         }
 
-        $progressSecs = (int)($event->positionTicks / 10_000_000);
+        $progressPercent = $this->computeProgressPercent($mediaItem, $event->positionTicks);
 
         $this->ensureFreshToken();
         $accessToken = $this->settings->accessToken ?? '';
@@ -455,7 +516,7 @@ final class TraktPlugin implements LifecycleInterface, ConfigurableInterface
         /** @var TraktApi $api */
         $api = $this->api;
 
-        $this->scheduleAsyncScrobblePause($mediaItem, $progressSecs, $accessToken, $api);
+        $this->scheduleAsyncScrobblePause($mediaItem, $progressPercent, $accessToken, $api);
     }
 
     /**
@@ -484,7 +545,7 @@ final class TraktPlugin implements LifecycleInterface, ConfigurableInterface
             return;
         }
 
-        $progressSecs = (int)($event->positionTicks / 10_000_000);
+        $progressPercent = $this->computeProgressPercent($mediaItem, $event->positionTicks);
 
         $this->ensureFreshToken();
         $accessToken = $this->settings->accessToken ?? '';
@@ -492,7 +553,7 @@ final class TraktPlugin implements LifecycleInterface, ConfigurableInterface
         /** @var TraktApi $api */
         $api = $this->api;
 
-        $this->scheduleAsyncScrobbleStart($mediaItem, $progressSecs, $accessToken, $api);
+        $this->scheduleAsyncScrobbleStart($mediaItem, $progressPercent, $accessToken, $api);
     }
 
     /**
@@ -504,21 +565,21 @@ final class TraktPlugin implements LifecycleInterface, ConfigurableInterface
      * Workerman\Timer is unavailable (unit tests, CLI).
      *
      * @param MediaItem $mediaItem Media item being played
-     * @param int $progressSecs Current playback position in seconds
+     * @param float $progressPercent Playback progress as a percentage (0-100)
      * @param string $accessToken OAuth access token
      * @param TraktApi $api Trakt API client
      *
      * @return void
      */
-    private function scheduleAsyncScrobbleStart(MediaItem $mediaItem, int $progressSecs, string $accessToken, TraktApi $api): void
+    private function scheduleAsyncScrobbleStart(MediaItem $mediaItem, float $progressPercent, string $accessToken, TraktApi $api): void
     {
         if (class_exists(\Workerman\Timer::class)) {
-            \Workerman\Timer::add(0, function () use ($mediaItem, $progressSecs, $accessToken, $api): void {
-                $this->executeScrobbleStart($mediaItem, $progressSecs, $accessToken, $api);
+            \Workerman\Timer::add(0, function () use ($mediaItem, $progressPercent, $accessToken, $api): void {
+                $this->executeScrobbleStart($mediaItem, $progressPercent, $accessToken, $api);
             });
         } else {
             // Fallback: run synchronously (unit-test / CLI path)
-            $this->executeScrobbleStart($mediaItem, $progressSecs, $accessToken, $api);
+            $this->executeScrobbleStart($mediaItem, $progressPercent, $accessToken, $api);
         }
     }
 
@@ -529,29 +590,29 @@ final class TraktPlugin implements LifecycleInterface, ConfigurableInterface
      * refresh-then-retry, and final error logging.
      *
      * @param MediaItem $mediaItem Media item being played
-     * @param int $progressSecs Current playback position in seconds
+     * @param float $progressPercent Playback progress as a percentage (0-100)
      * @param string $accessToken OAuth access token
      * @param TraktApi $api Trakt API client
      *
      * @return void
      */
-    private function executeScrobbleStart(MediaItem $mediaItem, int $progressSecs, string $accessToken, TraktApi $api): void
+    private function executeScrobbleStart(MediaItem $mediaItem, float $progressPercent, string $accessToken, TraktApi $api): void
     {
         try {
-            $api->scrobbleStart($mediaItem, $progressSecs, $accessToken);
+            $api->scrobbleStart($mediaItem, $progressPercent, $accessToken);
 
             $this->logger?->info('Trakt scrobble start submitted', [
                 'title' => $mediaItem->name,
-                'progress' => $progressSecs,
+                'progress' => $progressPercent,
             ]);
         } catch (TraktAuthenticationException $e) {
             if ($this->refreshAfterAuthFailure($e, 'scrobble start')) {
                 try {
-                    $api->scrobbleStart($mediaItem, $progressSecs, $this->settings->accessToken ?? '');
+                    $api->scrobbleStart($mediaItem, $progressPercent, $this->settings->accessToken ?? '');
 
                     $this->logger?->info('Trakt scrobble start submitted after refresh', [
                         'title' => $mediaItem->name,
-                        'progress' => $progressSecs,
+                        'progress' => $progressPercent,
                     ]);
                 } catch (TraktApiException $retry) {
                     $this->logger?->warning('Trakt: scrobble start failed after refresh retry', [
@@ -575,21 +636,21 @@ final class TraktPlugin implements LifecycleInterface, ConfigurableInterface
      * Workerman\Timer is unavailable (unit tests, CLI).
      *
      * @param MediaItem $mediaItem Media item that was played
-     * @param int $progressSecs Final playback position in seconds
+     * @param float $progressPercent Final playback progress as a percentage (0-100)
      * @param string $accessToken OAuth access token
      * @param TraktApi $api Trakt API client
      *
      * @return void
      */
-    private function scheduleAsyncScrobbleStop(MediaItem $mediaItem, int $progressSecs, string $accessToken, TraktApi $api): void
+    private function scheduleAsyncScrobbleStop(MediaItem $mediaItem, float $progressPercent, string $accessToken, TraktApi $api): void
     {
         if (class_exists(\Workerman\Timer::class)) {
-            \Workerman\Timer::add(0, function () use ($mediaItem, $progressSecs, $accessToken, $api): void {
-                $this->executeScrobbleStop($mediaItem, $progressSecs, $accessToken, $api);
+            \Workerman\Timer::add(0, function () use ($mediaItem, $progressPercent, $accessToken, $api): void {
+                $this->executeScrobbleStop($mediaItem, $progressPercent, $accessToken, $api);
             });
         } else {
             // Fallback: run synchronously (unit-test / CLI path)
-            $this->executeScrobbleStop($mediaItem, $progressSecs, $accessToken, $api);
+            $this->executeScrobbleStop($mediaItem, $progressPercent, $accessToken, $api);
         }
     }
 
@@ -600,29 +661,29 @@ final class TraktPlugin implements LifecycleInterface, ConfigurableInterface
      * refresh-then-retry, and final error logging.
      *
      * @param MediaItem $mediaItem Media item that was played
-     * @param int $progressSecs Final playback position in seconds
+     * @param float $progressPercent Final playback progress as a percentage (0-100)
      * @param string $accessToken OAuth access token
      * @param TraktApi $api Trakt API client
      *
      * @return void
      */
-    private function executeScrobbleStop(MediaItem $mediaItem, int $progressSecs, string $accessToken, TraktApi $api): void
+    private function executeScrobbleStop(MediaItem $mediaItem, float $progressPercent, string $accessToken, TraktApi $api): void
     {
         try {
-            $api->scrobbleStop($mediaItem, $progressSecs, $accessToken);
+            $api->scrobbleStop($mediaItem, $progressPercent, $accessToken);
 
             $this->logger?->info('Trakt scrobble stop submitted', [
                 'title' => $mediaItem->name,
-                'progress' => $progressSecs,
+                'progress' => $progressPercent,
             ]);
         } catch (TraktAuthenticationException $e) {
             if ($this->refreshAfterAuthFailure($e, 'scrobble stop')) {
                 try {
-                    $api->scrobbleStop($mediaItem, $progressSecs, $this->settings->accessToken ?? '');
+                    $api->scrobbleStop($mediaItem, $progressPercent, $this->settings->accessToken ?? '');
 
                     $this->logger?->info('Trakt scrobble stop submitted after refresh', [
                         'title' => $mediaItem->name,
-                        'progress' => $progressSecs,
+                        'progress' => $progressPercent,
                     ]);
                 } catch (TraktApiException $retry) {
                     $this->logger?->warning('Trakt: scrobble stop failed after refresh retry', [
@@ -646,21 +707,21 @@ final class TraktPlugin implements LifecycleInterface, ConfigurableInterface
      * Workerman\Timer is unavailable (unit tests, CLI).
      *
      * @param MediaItem $mediaItem Media item that was playing
-     * @param int $progressSecs Current playback position in seconds
+     * @param float $progressPercent Playback progress as a percentage (0-100)
      * @param string $accessToken OAuth access token
      * @param TraktApi $api Trakt API client
      *
      * @return void
      */
-    private function scheduleAsyncScrobblePause(MediaItem $mediaItem, int $progressSecs, string $accessToken, TraktApi $api): void
+    private function scheduleAsyncScrobblePause(MediaItem $mediaItem, float $progressPercent, string $accessToken, TraktApi $api): void
     {
         if (class_exists(\Workerman\Timer::class)) {
-            \Workerman\Timer::add(0, function () use ($mediaItem, $progressSecs, $accessToken, $api): void {
-                $this->executeScrobblePause($mediaItem, $progressSecs, $accessToken, $api);
+            \Workerman\Timer::add(0, function () use ($mediaItem, $progressPercent, $accessToken, $api): void {
+                $this->executeScrobblePause($mediaItem, $progressPercent, $accessToken, $api);
             });
         } else {
             // Fallback: run synchronously (unit-test / CLI path)
-            $this->executeScrobblePause($mediaItem, $progressSecs, $accessToken, $api);
+            $this->executeScrobblePause($mediaItem, $progressPercent, $accessToken, $api);
         }
     }
 
@@ -668,29 +729,29 @@ final class TraktPlugin implements LifecycleInterface, ConfigurableInterface
      * B6: Execute a scrobble-pause call (called inside timer callback).
      *
      * @param MediaItem $mediaItem Media item that was playing
-     * @param int $progressSecs Current playback position in seconds
+     * @param float $progressPercent Playback progress as a percentage (0-100)
      * @param string $accessToken OAuth access token
      * @param TraktApi $api Trakt API client
      *
      * @return void
      */
-    private function executeScrobblePause(MediaItem $mediaItem, int $progressSecs, string $accessToken, TraktApi $api): void
+    private function executeScrobblePause(MediaItem $mediaItem, float $progressPercent, string $accessToken, TraktApi $api): void
     {
         try {
-            $api->scrobblePause($mediaItem, $progressSecs, $accessToken);
+            $api->scrobblePause($mediaItem, $progressPercent, $accessToken);
 
             $this->logger?->info('Trakt scrobble pause submitted', [
                 'title' => $mediaItem->name,
-                'progress' => $progressSecs,
+                'progress' => $progressPercent,
             ]);
         } catch (TraktAuthenticationException $e) {
             if ($this->refreshAfterAuthFailure($e, 'scrobble pause')) {
                 try {
-                    $api->scrobblePause($mediaItem, $progressSecs, $this->settings->accessToken ?? '');
+                    $api->scrobblePause($mediaItem, $progressPercent, $this->settings->accessToken ?? '');
 
                     $this->logger?->info('Trakt scrobble pause submitted after refresh', [
                         'title' => $mediaItem->name,
-                        'progress' => $progressSecs,
+                        'progress' => $progressPercent,
                     ]);
                 } catch (TraktApiException $retry) {
                     $this->logger?->warning('Trakt: scrobble pause failed after refresh retry', [
@@ -1148,6 +1209,76 @@ final class TraktPlugin implements LifecycleInterface, ConfigurableInterface
     }
 
     /**
+     * Compute the scrobble progress as a percentage (0-100) of the media's
+     * total duration.
+     *
+     * Trakt's `/scrobble/{start|pause|stop}` endpoints require `progress` to be
+     * a PERCENTAGE, not a raw position — sending seconds (the historic bug)
+     * makes Trakt treat any multi-minute position as ≥100% and mark items
+     * watched far too early. The playback events only carry a position in ticks,
+     * so the duration is resolved from the {@see MediaItem} metadata:
+     *  1. `duration_seconds` — the precise container length probed at scan/
+     *     transcode time (preferred), else
+     *  2. `runtime` — the TMDB runtime in MINUTES (converted to seconds).
+     * When no duration is available the percent cannot be derived, so we return
+     * 0.0 (a safe, in-range value) rather than a bogus seconds figure.
+     *
+     * @param MediaItem $item Media item being scrobbled.
+     * @param int $positionTicks Playback position in 100-ns ticks.
+     *
+     * @return float Progress percentage clamped to [0, 100], rounded to 2dp.
+     */
+    private function computeProgressPercent(MediaItem $item, int $positionTicks): float
+    {
+        $durationSeconds = $this->resolveDurationSeconds($item);
+        if ($durationSeconds <= 0.0) {
+            return 0.0;
+        }
+
+        $positionSeconds = $positionTicks / 10_000_000;
+        $percent = $positionSeconds / $durationSeconds * 100;
+
+        if ($percent < 0.0) {
+            return 0.0;
+        }
+        if ($percent > 100.0) {
+            return 100.0;
+        }
+
+        return round($percent, 2);
+    }
+
+    /**
+     * Resolve the media item's total duration, in seconds, from its metadata.
+     *
+     * Prefers the precise probed `duration_seconds` and falls back to the TMDB
+     * `runtime` (minutes → seconds). Returns 0.0 when neither is a usable
+     * positive number, signalling "duration unknown" to
+     * {@see self::computeProgressPercent()}.
+     *
+     * @param MediaItem $item Media item being scrobbled.
+     *
+     * @return float Duration in seconds, or 0.0 when unknown.
+     */
+    private function resolveDurationSeconds(MediaItem $item): float
+    {
+        $metadata = $item->metadata;
+
+        $durationSeconds = $metadata['duration_seconds'] ?? null;
+        if (is_numeric($durationSeconds) && (float) $durationSeconds > 0.0) {
+            return (float) $durationSeconds;
+        }
+
+        // TMDB runtime is expressed in whole minutes.
+        $runtime = $metadata['runtime'] ?? null;
+        if (is_numeric($runtime) && (float) $runtime > 0.0) {
+            return (float) $runtime * 60.0;
+        }
+
+        return 0.0;
+    }
+
+    /**
      * Sync completed playback to Trakt history.
      *
      * @param string $mediaItemId Media item ID
@@ -1250,20 +1381,42 @@ final class TraktPlugin implements LifecycleInterface, ConfigurableInterface
         }
 
         try {
-            $sync = new TraktHistorySync(
-                $this->api,
-                $this->watchHistory,
-                $this->settings,
-                $this->db,
-                $this->logger
-            );
-            // Use 'default' profile for now (per-profile sync is future work)
-            $sync->syncTraktToPhlix('default');
+            // Use the default profile for now (per-profile sync is future work).
+            $this->makeHistorySync()->syncTraktToPhlix(self::DEFAULT_PROFILE_ID);
         } catch (\Throwable $e) {
             $this->logger?->warning('Trakt periodic sync failed', [
                 'error' => $e->getMessage(),
             ]);
         }
+    }
+
+    /**
+     * Build a {@see TraktHistorySync} from the plugin's current collaborators.
+     *
+     * Single construction path shared by the scheduled pull tick
+     * ({@see self::runScheduledSync()}) and the on-demand pull entry point
+     * ({@see self::syncHistoryFromTrakt()}) so they cannot drift. Callers MUST
+     * have already asserted that {@see $api}, {@see $watchHistory} and {@see $db}
+     * are non-null (both callers do). Overridable as a test seam.
+     *
+     * @return TraktHistorySync
+     */
+    protected function makeHistorySync(): TraktHistorySync
+    {
+        /** @var TraktApi $api */
+        $api = $this->api;
+        /** @var WatchHistory $watchHistory */
+        $watchHistory = $this->watchHistory;
+        /** @var Connection $db */
+        $db = $this->db;
+
+        return new TraktHistorySync(
+            $api,
+            $watchHistory,
+            $this->settings,
+            $db,
+            $this->logger
+        );
     }
 
     /**

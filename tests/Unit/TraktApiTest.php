@@ -217,14 +217,14 @@ final class TraktApiTest extends TestCase
         $http = new MockHttpClient([['action' => 'start', 'watched_at' => '2026-06-28T00:00:00Z']]);
         $api = new TraktApi($http, self::CLIENT_ID, self::CLIENT_SECRET, new NullLogger());
 
-        $api->scrobbleStart($this->makeMovieItem(), 42, 'scrobble-token');
+        $api->scrobbleStart($this->makeMovieItem(), 42.0, 'scrobble-token');
 
         // Action is in the URL path, NOT the body (Trakt scrobble contract).
         $this->assertSame('POST', $http->lastMethod);
         $this->assertSame('https://api.trakt.tv/scrobble/start', $http->lastUrl);
-        // Body carries progress + the movie object, and MUST NOT carry `action`
-        // or a null `episode` sibling key.
-        $this->assertSame(42, $http->lastData['progress'] ?? null);
+        // Body carries progress (a percentage float) + the movie object, and
+        // MUST NOT carry `action` or a null `episode` sibling key.
+        $this->assertSame(42.0, $http->lastData['progress'] ?? null);
         $this->assertArrayHasKey('movie', $http->lastData);
         $this->assertArrayNotHasKey('episode', $http->lastData);
         $this->assertArrayNotHasKey('action', $http->lastData);
@@ -236,10 +236,10 @@ final class TraktApiTest extends TestCase
         $http = new MockHttpClient([['action' => 'stop', 'watched_at' => '2026-06-28T00:00:00Z']]);
         $api = new TraktApi($http, self::CLIENT_ID, self::CLIENT_SECRET, new NullLogger());
 
-        $api->scrobbleStop($this->makeMovieItem(), 99, 'scrobble-token');
+        $api->scrobbleStop($this->makeMovieItem(), 99.0, 'scrobble-token');
 
         $this->assertSame('https://api.trakt.tv/scrobble/stop', $http->lastUrl);
-        $this->assertSame(99, $http->lastData['progress'] ?? null);
+        $this->assertSame(99.0, $http->lastData['progress'] ?? null);
     }
 
     public function testScrobblePausePostsEpisodePayloadToPauseEndpoint(): void
@@ -264,6 +264,69 @@ final class TraktApiTest extends TestCase
         $this->assertArrayNotHasKey('action', $http->lastData);
         $this->assertSame(555, $http->lastData['episode']['ids']['tvdb'] ?? null);
         $this->assertSame(2, $http->lastData['episode']['number'] ?? null);
+    }
+
+    /**
+     * A4: /sync/history for a MOVIE must post {"movies":[{...ids, watched_at}]}
+     * — a plural array, each item carrying its OWN watched_at, with NO top-level
+     * watched_at and NO null `episode` sibling.
+     */
+    public function testAddToHistoryPostsMoviesArrayWithPerItemWatchedAt(): void
+    {
+        $http = new MockHttpClient([['added' => ['movies' => 1]]]);
+        $api = new TraktApi($http, self::CLIENT_ID, self::CLIENT_SECRET, new NullLogger());
+
+        $watchedAt = new \DateTimeImmutable('2026-06-28T12:34:56+00:00');
+        $api->addToHistory($this->makeMovieItem(), $watchedAt, 'history-token');
+
+        $this->assertSame('POST', $http->lastMethod);
+        $this->assertSame('https://api.trakt.tv/sync/history', $http->lastUrl);
+
+        // Correct plural wrapper; no episodes, no legacy single-object keys.
+        $this->assertArrayHasKey('movies', $http->lastData);
+        $this->assertArrayNotHasKey('episodes', $http->lastData);
+        $this->assertArrayNotHasKey('movie', $http->lastData);
+        $this->assertArrayNotHasKey('episode', $http->lastData);
+        // watched_at is per-item, never top-level.
+        $this->assertArrayNotHasKey('watched_at', $http->lastData);
+
+        $this->assertCount(1, $http->lastData['movies']);
+        $movie = $http->lastData['movies'][0];
+        $this->assertSame($watchedAt->format('Y-m-d\TH:i:s.vP'), $movie['watched_at'] ?? null);
+        $this->assertSame(1, $movie['ids']['trakt'] ?? null);
+    }
+
+    /**
+     * A4: /sync/history for an EPISODE must post {"episodes":[{...ids, season,
+     * number, watched_at}]} with the same per-item watched_at contract.
+     */
+    public function testAddToHistoryPostsEpisodesArrayWithPerItemWatchedAt(): void
+    {
+        $http = new MockHttpClient([['added' => ['episodes' => 1]]]);
+        $api = new TraktApi($http, self::CLIENT_ID, self::CLIENT_SECRET, new NullLogger());
+
+        $item = new \Phlix\Media\Library\MediaItem(
+            id: 'ep-hist',
+            name: 'History Episode',
+            type: 'episode',
+            path: '/tv/show/s01e02.mkv',
+            metadata: ['tvdb_id' => 555, 'season_number' => 1, 'episode_number' => 2],
+        );
+
+        $watchedAt = new \DateTimeImmutable('2026-06-28T12:34:56+00:00');
+        $api->addToHistory($item, $watchedAt, 'history-token');
+
+        $this->assertArrayHasKey('episodes', $http->lastData);
+        $this->assertArrayNotHasKey('movies', $http->lastData);
+        $this->assertArrayNotHasKey('movie', $http->lastData);
+        $this->assertArrayNotHasKey('episode', $http->lastData);
+        $this->assertArrayNotHasKey('watched_at', $http->lastData);
+
+        $this->assertCount(1, $http->lastData['episodes']);
+        $episode = $http->lastData['episodes'][0];
+        $this->assertSame($watchedAt->format('Y-m-d\TH:i:s.vP'), $episode['watched_at'] ?? null);
+        $this->assertSame(555, $episode['ids']['tvdb'] ?? null);
+        $this->assertSame(2, $episode['number'] ?? null);
     }
 
     /**

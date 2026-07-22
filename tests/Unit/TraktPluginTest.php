@@ -9,6 +9,7 @@ use Phlix\Plugins\Scrobbler\Trakt\TraktApi;
 use Phlix\Plugins\Scrobbler\Trakt\TraktApiException;
 use Phlix\Plugins\Scrobbler\Trakt\TraktAuthenticationException;
 use Phlix\Plugins\Scrobbler\Trakt\TokenCipher;
+use Phlix\Plugins\Scrobbler\Trakt\TraktHistorySync;
 use Phlix\Plugins\Scrobbler\Trakt\TraktPlugin;
 use Phlix\Plugins\Scrobbler\Trakt\TraktSettings;
 use Phlix\Plugins\Scrobbler\Trakt\TraktSettingsRepository;
@@ -765,6 +766,177 @@ final class TraktPluginTest extends TestCase
         $this->assertSame('carol', $spa['username']);
     }
 
+    // --- A3: scrobble progress is a percentage (0-100), not raw seconds -----
+
+    /**
+     * A scrobble must report `progress` as a PERCENTAGE of the media duration,
+     * derived from position + duration — NOT the raw position in seconds.
+     *
+     * The item is 200s long and the event position is 100s (half), so the
+     * expected progress is 50.0%. The historic bug sent 100 (the raw seconds),
+     * so this test discriminates the fix from the defect.
+     */
+    public function testScrobbleReportsProgressAsPercentageNotSeconds(): void
+    {
+        $api = new FakeTraktApi();
+        $settings = $this->freshSettings();
+
+        $plugin = new TraktPlugin($settings, new NullLogger(), $api, new RecordingSettingsRepository());
+        $container = new StubContainer([
+            \Phlix\Media\Library\ItemRepository::class => new DurationItemRepository(200),
+            \Phlix\Auth\WatchHistory::class => null,
+        ]);
+        $plugin->onEnable($container);
+        $plugin->configure(array_merge($settings->toArray(), ['enabled' => true]));
+
+        // 100 seconds into a 200-second movie → 50%.
+        $plugin->onPlaybackStarted(new PlaybackStarted(
+            sessionId: 'sess-1',
+            userId: 'user-1',
+            mediaItemId: 'mi-1',
+            deviceId: 'dev-1',
+            positionTicks: 100 * 10_000_000,
+        ));
+
+        $this->assertSame(1, $api->scrobbleStartCalls);
+        $this->assertSame(50.0, $api->lastProgress, 'progress must be the percent, not the raw 100 seconds');
+    }
+
+    /**
+     * A position beyond the media duration must clamp the reported progress to
+     * 100% (Trakt rejects anything above 100), never overflow.
+     */
+    public function testScrobbleProgressClampsToOneHundred(): void
+    {
+        $api = new FakeTraktApi();
+        $settings = $this->freshSettings();
+
+        $plugin = new TraktPlugin($settings, new NullLogger(), $api, new RecordingSettingsRepository());
+        $container = new StubContainer([
+            \Phlix\Media\Library\ItemRepository::class => new DurationItemRepository(100),
+            \Phlix\Auth\WatchHistory::class => null,
+        ]);
+        $plugin->onEnable($container);
+        $plugin->configure(array_merge($settings->toArray(), ['enabled' => true]));
+
+        // 500 seconds into a 100-second movie → clamped to 100%.
+        $plugin->onPlaybackStopped(new PlaybackStopped(
+            sessionId: 'sess-1',
+            userId: 'user-1',
+            mediaItemId: 'mi-1',
+            deviceId: 'dev-1',
+            finalPositionTicks: 500 * 10_000_000,
+            reachedEnd: false,
+        ));
+
+        $this->assertSame(1, $api->scrobbleStopCalls);
+        $this->assertSame(100.0, $api->lastProgress);
+    }
+
+    /**
+     * When the media carries no usable duration, progress falls back to 0.0
+     * (a safe in-range value) rather than a bogus raw-seconds figure.
+     */
+    public function testScrobbleProgressIsZeroWhenDurationUnknown(): void
+    {
+        $api = new FakeTraktApi();
+        $settings = $this->freshSettings();
+
+        // FakeItemRepository returns a movie row WITHOUT any duration metadata.
+        $plugin = $this->makeWiredPlugin(
+            api: $api,
+            repo: new RecordingSettingsRepository(),
+            settings: $settings,
+        );
+
+        $plugin->onPlaybackPaused(new PlaybackPaused(
+            sessionId: 'sess-1',
+            userId: 'user-1',
+            mediaItemId: 'mi-1',
+            deviceId: 'dev-1',
+            positionTicks: 90 * 10_000_000,
+        ));
+
+        $this->assertSame(1, $api->scrobblePauseCalls);
+        $this->assertSame(0.0, $api->lastProgress);
+    }
+
+    // --- A2: on-demand Trakt→Phlix pull entry point -------------------------
+
+    /**
+     * syncHistoryFromTrakt() must delegate to TraktHistorySync::syncTraktToPhlix
+     * for the requested profile and return its integer result verbatim.
+     */
+    public function testSyncHistoryFromTraktDelegatesAndReturnsWrittenCount(): void
+    {
+        $api = new FakeTraktApi();
+        $settings = $this->freshSettings();
+
+        $seam = new RecordingHistorySync(
+            $api,
+            new \Phlix\Auth\WatchHistory(),
+            $settings,
+            new \Workerman\MySQL\TestableConnection(),
+            new NullLogger(),
+        );
+        $seam->returnValue = 7;
+
+        $plugin = new SeamTraktPlugin($settings, new NullLogger(), $api, new RecordingSettingsRepository());
+        $plugin->historySyncSeam = $seam;
+        $plugin->configure(array_merge($settings->toArray(), ['enabled' => true]));
+
+        $container = new StubContainer([
+            \Phlix\Media\Library\ItemRepository::class => new FakeItemRepository(),
+            \Phlix\Auth\WatchHistory::class => new \Phlix\Auth\WatchHistory(),
+            \Workerman\MySQL\Connection::class => new \Workerman\MySQL\TestableConnection(),
+        ]);
+
+        $written = $plugin->syncHistoryFromTrakt($container, 'profile-x');
+
+        $this->assertSame(7, $written, 'must return syncTraktToPhlix result');
+        $this->assertSame('profile-x', $seam->lastProfileId, 'must delegate the requested profile');
+    }
+
+    /**
+     * syncHistoryFromTrakt() returns 0 (and does NOT delegate) when two-way
+     * sync is disabled — the timer tick must be a cheap no-op in that case.
+     */
+    public function testSyncHistoryFromTraktReturnsZeroWhenSyncDisabled(): void
+    {
+        $api = new FakeTraktApi();
+        $settings = new TraktSettings(
+            accessToken: 'fresh-access',
+            refreshToken: 'fresh-refresh',
+            expiresAt: time() + 3600,
+            syncEnabled: false,
+            username: 'testuser',
+        );
+
+        $seam = new RecordingHistorySync(
+            $api,
+            new \Phlix\Auth\WatchHistory(),
+            $settings,
+            new \Workerman\MySQL\TestableConnection(),
+            new NullLogger(),
+        );
+        $seam->returnValue = 99;
+
+        $plugin = new SeamTraktPlugin($settings, new NullLogger(), $api, new RecordingSettingsRepository());
+        $plugin->historySyncSeam = $seam;
+        $plugin->configure(array_merge($settings->toArray(), ['enabled' => true, 'sync_enabled' => false]));
+
+        $container = new StubContainer([
+            \Phlix\Media\Library\ItemRepository::class => new FakeItemRepository(),
+            \Phlix\Auth\WatchHistory::class => new \Phlix\Auth\WatchHistory(),
+            \Workerman\MySQL\Connection::class => new \Workerman\MySQL\TestableConnection(),
+        ]);
+
+        $written = $plugin->syncHistoryFromTrakt($container);
+
+        $this->assertSame(0, $written);
+        $this->assertSame('', $seam->lastProfileId, 'must not delegate when sync is disabled');
+    }
+
     // --- helpers ------------------------------------------------------------
 
     private function makeWiredPlugin(
@@ -868,6 +1040,8 @@ final class FakeTraktApi extends TraktApi
     public bool $throwAuthOnFirstScrobble = false;
     public bool $throwOnFirstRefresh = false;
     public string $lastScrobbleToken = '';
+    /** Progress value (percent) passed to the most recent scrobble call. */
+    public float $lastProgress = -1.0;
 
     /** @var array<string, mixed> */
     public array $refreshResult = [
@@ -892,10 +1066,11 @@ final class FakeTraktApi extends TraktApi
         return $this->refreshResult;
     }
 
-    public function scrobbleStart(\Phlix\Media\Library\MediaItem $item, int $progress, string $accessToken): array
+    public function scrobbleStart(\Phlix\Media\Library\MediaItem $item, float $progress, string $accessToken): array
     {
         $this->scrobbleStartCalls++;
         $this->lastScrobbleToken = $accessToken;
+        $this->lastProgress = $progress;
 
         if ($this->throwAuthOnFirstScrobble && $this->scrobbleStartCalls === 1) {
             throw new TraktAuthenticationException('Unauthorized', 401);
@@ -904,10 +1079,11 @@ final class FakeTraktApi extends TraktApi
         return ['action' => 'start', 'watched_at' => '2026-06-28T00:00:00Z'];
     }
 
-    public function scrobbleStop(\Phlix\Media\Library\MediaItem $item, int $progress, string $accessToken): array
+    public function scrobbleStop(\Phlix\Media\Library\MediaItem $item, float $progress, string $accessToken): array
     {
         $this->scrobbleStopCalls++;
         $this->lastScrobbleToken = $accessToken;
+        $this->lastProgress = $progress;
 
         if ($this->throwAuthOnFirstScrobble && $this->scrobbleStopCalls === 1) {
             throw new TraktAuthenticationException('Unauthorized', 401);
@@ -916,10 +1092,11 @@ final class FakeTraktApi extends TraktApi
         return ['action' => 'stop', 'watched_at' => '2026-06-28T00:00:00Z'];
     }
 
-    public function scrobblePause(\Phlix\Media\Library\MediaItem $item, int $progress, string $accessToken): array
+    public function scrobblePause(\Phlix\Media\Library\MediaItem $item, float $progress, string $accessToken): array
     {
         $this->scrobblePauseCalls++;
         $this->lastScrobbleToken = $accessToken;
+        $this->lastProgress = $progress;
 
         if ($this->throwAuthOnFirstScrobble && $this->scrobblePauseCalls === 1) {
             throw new TraktAuthenticationException('Unauthorized', 401);
@@ -1099,7 +1276,7 @@ final class NullHttpClient implements HttpClientInterface
  * Stub ItemRepository: findById() returns a fixed row so findMediaItem()
  * resolves to a MediaItem (via the canonical MediaItem stub's fromRow()).
  */
-final class FakeItemRepository
+class FakeItemRepository
 {
     /** @return array<string, mixed>|null */
     public function findById(string $id): ?array
@@ -1163,4 +1340,66 @@ if (!class_exists(MediaItemStub::class)) {
 
 if (!class_exists(\Phlix\Media\Library\MediaItem::class)) {
     \class_alias(MediaItemStub::class, \Phlix\Media\Library\MediaItem::class);
+}
+
+/**
+ * ItemRepository stub whose findById() carries a duration (seconds) in the
+ * media metadata, so progress-percent computation has a real denominator.
+ */
+final class DurationItemRepository extends FakeItemRepository
+{
+    public function __construct(private int $durationSeconds)
+    {
+    }
+
+    /** @return array<string, mixed>|null */
+    public function findById(string $id): ?array
+    {
+        return [
+            'id' => $id,
+            'name' => 'Test Movie',
+            'type' => 'movie',
+            'path' => '/movies/test.mkv',
+            'metadata' => [
+                'trakt_id' => 1,
+                'imdb_id' => 'tt0000001',
+                'tmdb_id' => 42,
+                'duration_seconds' => $this->durationSeconds,
+            ],
+        ];
+    }
+}
+
+/**
+ * TraktPlugin subclass exposing a settable TraktHistorySync seam so the
+ * on-demand pull entry point can be verified without a live DB/HTTP round-trip.
+ */
+final class SeamTraktPlugin extends TraktPlugin
+{
+    public ?TraktHistorySync $historySyncSeam = null;
+
+    protected function makeHistorySync(): TraktHistorySync
+    {
+        /** @var TraktHistorySync $seam */
+        $seam = $this->historySyncSeam;
+
+        return $seam;
+    }
+}
+
+/**
+ * TraktHistorySync stub recording the profile it was asked to reconcile and
+ * returning a configurable written-count, so delegation can be asserted.
+ */
+final class RecordingHistorySync extends TraktHistorySync
+{
+    public string $lastProfileId = '';
+    public int $returnValue = 0;
+
+    public function syncTraktToPhlix(string $profileId): int
+    {
+        $this->lastProfileId = $profileId;
+
+        return $this->returnValue;
+    }
 }

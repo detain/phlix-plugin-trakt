@@ -175,7 +175,7 @@ class TraktApi
      * "start" action when playback begins.
      *
      * @param MediaItem $item Media item being played
-     * @param int $progress Current playback position in seconds
+     * @param float $progress Playback progress as a percentage (0-100)
      * @param string $accessToken OAuth access token
      *
      * @return array<string, mixed> Scrobble response with action and watched_at
@@ -183,7 +183,7 @@ class TraktApi
      * @throws TraktApiException|TraktAuthenticationException On API error or auth failure
      * @since 0.14.0
      */
-    public function scrobbleStart(MediaItem $item, int $progress, string $accessToken): array
+    public function scrobbleStart(MediaItem $item, float $progress, string $accessToken): array
     {
         return $this->scrobble('start', $item, $progress, $accessToken);
     }
@@ -195,7 +195,7 @@ class TraktApi
      * "pause" action when playback progress is updated.
      *
      * @param MediaItem $item Media item being played
-     * @param int $progress Current playback position in seconds
+     * @param float $progress Playback progress as a percentage (0-100)
      * @param string $accessToken OAuth access token
      *
      * @return array<string, mixed> Scrobble response with action and watched_at
@@ -203,7 +203,7 @@ class TraktApi
      * @throws TraktApiException|TraktAuthenticationException On API error or auth failure
      * @since 0.14.0
      */
-    public function scrobblePause(MediaItem $item, int $progress, string $accessToken): array
+    public function scrobblePause(MediaItem $item, float $progress, string $accessToken): array
     {
         return $this->scrobble('pause', $item, $progress, $accessToken);
     }
@@ -215,7 +215,7 @@ class TraktApi
      * "stop" action when playback ends or is stopped.
      *
      * @param MediaItem $item Media item that was played
-     * @param int $progress Final playback position in seconds
+     * @param float $progress Final playback progress as a percentage (0-100)
      * @param string $accessToken OAuth access token
      *
      * @return array<string, mixed> Scrobble response with action and watched_at
@@ -223,7 +223,7 @@ class TraktApi
      * @throws TraktApiException|TraktAuthenticationException On API error or auth failure
      * @since 0.14.0
      */
-    public function scrobbleStop(MediaItem $item, int $progress, string $accessToken): array
+    public function scrobbleStop(MediaItem $item, float $progress, string $accessToken): array
     {
         return $this->scrobble('stop', $item, $progress, $accessToken);
     }
@@ -233,14 +233,14 @@ class TraktApi
      *
      * @param string $action Scrobble action (start|pause|stop)
      * @param MediaItem $item Media item
-     * @param int $progress Playback position in seconds
+     * @param float $progress Playback progress as a percentage (0-100)
      * @param string $accessToken OAuth access token
      *
      * @return array<string, mixed>
      *
      * @throws TraktApiException|TraktAuthenticationException
      */
-    private function scrobble(string $action, MediaItem $item, int $progress, string $accessToken): array
+    private function scrobble(string $action, MediaItem $item, float $progress, string $accessToken): array
     {
         $movie = null;
         $episode = null;
@@ -392,11 +392,19 @@ class TraktApi
             ];
         }
 
-        $payload = [
-            'watched_at' => $watchedAt->format('Y-m-d\TH:i:s.vP'),
-            'movie' => $movie,
-            'episode' => $episode,
-        ];
+        // Trakt's /sync/history contract wraps items in a plural array keyed by
+        // media kind (`movies` OR `episodes`), and each item carries its OWN
+        // `watched_at` — NOT a single object with a top-level `watched_at` and a
+        // null sibling (the historic bug, which Trakt rejected/ignored).
+        $watchedAtStr = $watchedAt->format('Y-m-d\TH:i:s.vP');
+        $payload = [];
+        if ($movie !== null) {
+            $movie['watched_at'] = $watchedAtStr;
+            $payload = ['movies' => [$movie]];
+        } elseif ($episode !== null) {
+            $episode['watched_at'] = $watchedAtStr;
+            $payload = ['episodes' => [$episode]];
+        }
 
         $response = $this->http->post(
             self::BASE_URL . '/sync/history',
