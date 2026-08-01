@@ -249,7 +249,7 @@ class TraktPlugin implements LifecycleInterface, ConfigurableInterface
         }
 
         try {
-            if ($container->has(TraktSettingsRepository::class)) {
+            if ($container->has(TraktSettingsRepository::class) === true) {
                 $repo = $container->get(TraktSettingsRepository::class);
                 $this->settingsRepository = $repo instanceof TraktSettingsRepository ? $repo : null;
             }
@@ -284,7 +284,7 @@ class TraktPlugin implements LifecycleInterface, ConfigurableInterface
         }
 
         try {
-            if ($container->has(TokenCipher::class)) {
+            if ($container->has(TokenCipher::class) === true) {
                 $cipher = $container->get(TokenCipher::class);
                 if ($cipher instanceof TokenCipher) {
                     $this->tokenCipher = $cipher;
@@ -401,7 +401,7 @@ class TraktPlugin implements LifecycleInterface, ConfigurableInterface
      */
     public function onPlaybackStarted(PlaybackStarted $event): void
     {
-        if (!$this->isConfigured()) {
+        if ($this->isConfigured() === false) {
             return;
         }
 

@@ -410,7 +410,11 @@ class TraktHistorySync
         if ($watchedAt !== null && is_string($watchedAt)) {
             try {
                 return new \DateTimeImmutable($watchedAt);
-            } catch (\Exception) {
+            } catch (\Exception $e) {
+                $this->logger->warning('TraktHistorySync: failed to parse watched_at timestamp', [
+                    'watched_at' => $watchedAt,
+                    'error' => $e->getMessage(),
+                ]);
             }
         }
         return new \DateTimeImmutable();
@@ -606,7 +610,6 @@ class TraktHistorySync
      */
     private function extractRatingValue(array $rating): ?int
     {
-        $rated = $rating['rated_at'] ?? null;
         $ratingValue = $rating['rating'] ?? null;
 
         if (!is_numeric($ratingValue)) {
