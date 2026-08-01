@@ -267,8 +267,19 @@ class TraktApi
             ];
         }
 
-        $hasAnyId = ($item->type === 'movie' && ($movie['ids']['trakt'] ?? $movie['ids']['imdb'] ?? $movie['ids']['tmdb'] ?? null) !== null)
-            || ($item->type === 'episode' && ($episode['ids']['trakt'] ?? $episode['ids']['tvdb'] ?? $episode['ids']['imdb'] ?? $episode['ids']['tmdb'] ?? null) !== null);
+        $movieIds = $movie['ids'] ?? [];
+        $episodeIds = $episode['ids'] ?? [];
+        $hasAnyId = (
+            $item->type === 'movie'
+            && ($movieIds['trakt'] ?? $movieIds['imdb'] ?? $movieIds['tmdb'] ?? null) !== null
+        ) || (
+            $item->type === 'episode'
+            && ($episodeIds['trakt']
+                ?? $episodeIds['tvdb']
+                ?? $episodeIds['imdb']
+                ?? $episodeIds['tmdb']
+                ?? null) !== null
+        );
 
         if (!$hasAnyId) {
             $this->logger->debug('Trakt scrobble skipped: no external ID available', [
@@ -331,8 +342,13 @@ class TraktApi
      * @throws TraktApiException|TraktAuthenticationException On API error
      * @since 0.14.0
      */
-    public function getWatchedHistory(string $username, int $page = 1, int $limit = 100, string $accessToken = ''): array
-    {
+    public function getWatchedHistory(
+        string $username,
+        int $page = 1,
+        int $limit = 100,
+        string $accessToken = ''
+    ): array {
+
         $params = [
             'page' => $page,
             'limit' => min($limit, 1000),
@@ -497,8 +513,19 @@ class TraktApi
             ];
         }
 
-        $hasAnyId = ($item->type === 'movie' && ($movie['ids']['trakt'] ?? $movie['ids']['imdb'] ?? $movie['ids']['tmdb'] ?? null) !== null)
-            || ($item->type === 'episode' && ($episode['ids']['trakt'] ?? $episode['ids']['tvdb'] ?? $episode['ids']['imdb'] ?? $episode['ids']['tmdb'] ?? null) !== null);
+        $movieIds = $movie['ids'] ?? [];
+        $episodeIds = $episode['ids'] ?? [];
+        $hasAnyId = (
+            $item->type === 'movie'
+            && ($movieIds['trakt'] ?? $movieIds['imdb'] ?? $movieIds['tmdb'] ?? null) !== null
+        ) || (
+            $item->type === 'episode'
+            && ($episodeIds['trakt']
+                ?? $episodeIds['tvdb']
+                ?? $episodeIds['imdb']
+                ?? $episodeIds['tmdb']
+                ?? null) !== null
+        );
 
         if (!$hasAnyId) {
             $this->logger->debug('Trakt rating skipped: no external ID available', [
@@ -573,8 +600,19 @@ class TraktApi
             ];
         }
 
-        $hasAnyId = ($item->type === 'movie' && ($movie['ids']['trakt'] ?? $movie['ids']['imdb'] ?? $movie['ids']['tmdb'] ?? null) !== null)
-            || ($item->type === 'episode' && ($episode['ids']['trakt'] ?? $episode['ids']['tvdb'] ?? $episode['ids']['imdb'] ?? $episode['ids']['tmdb'] ?? null) !== null);
+        $movieIds = $movie['ids'] ?? [];
+        $episodeIds = $episode['ids'] ?? [];
+        $hasAnyId = (
+            $item->type === 'movie'
+            && ($movieIds['trakt'] ?? $movieIds['imdb'] ?? $movieIds['tmdb'] ?? null) !== null
+        ) || (
+            $item->type === 'episode'
+            && ($episodeIds['trakt']
+                ?? $episodeIds['tvdb']
+                ?? $episodeIds['imdb']
+                ?? $episodeIds['tmdb']
+                ?? null) !== null
+        );
 
         if (!$hasAnyId) {
             $this->logger->debug('Trakt rating removal skipped: no external ID available', [
@@ -587,12 +625,19 @@ class TraktApi
         }
 
         // DELETE uses query params for the IDs
-        $ids = $item->type === 'movie' ? $movie['ids'] : $episode['ids'];
-        $type = $item->type === 'movie' ? 'movies' : 'episodes';
+        if ($item->type === 'movie') {
+            assert($movie !== null);
+            $ids = $movie['ids'];
+            $type = 'movies';
+        } else {
+            assert($episode !== null);
+            $ids = $episode['ids'];
+            $type = 'episodes';
+        }
 
         $params = [
             'type' => $type,
-            'ids' => implode(',', array_filter($ids, fn($v) => $v !== null)),
+            'ids' => implode(',', array_filter($ids, static fn ($v): bool => $v !== null)),
         ];
 
         // Build the remove payload with only the relevant media type (not both)
@@ -626,8 +671,11 @@ class TraktApi
     private function getRedirectUri(): string
     {
         $config = $this->loadConfig();
+        $redirectUri = $config['redirect_uri'] ?? null;
 
-        return is_string($config['redirect_uri'] ?? null) ? $config['redirect_uri'] : 'https://localhost/api/v1/oauth/trakt/callback';
+        return is_string($redirectUri)
+            ? $redirectUri
+            : 'https://localhost/api/v1/oauth/trakt/callback';
     }
 
     /**

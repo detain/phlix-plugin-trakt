@@ -292,9 +292,10 @@ class TraktPlugin implements LifecycleInterface, ConfigurableInterface
                 }
             }
         } catch (\Throwable $e) {
-            $this->logger?->warning('Trakt: token cipher unavailable from container; tokens may be stored unencrypted', [
-                'error' => $e->getMessage(),
-            ]);
+            $this->logger?->warning(
+                'Trakt: token cipher unavailable; tokens may be stored unencrypted',
+                ['error' => $e->getMessage()]
+            );
         }
 
         // Fall back to a libsodium cipher built from the host config key.
@@ -302,7 +303,9 @@ class TraktPlugin implements LifecycleInterface, ConfigurableInterface
         $this->tokenCipher = SodiumTokenCipher::fromConfig($config['token_encryption_key'] ?? null);
 
         if ($this->tokenCipher === null) {
-            $this->logger?->warning('Trakt: no token encryption key configured; OAuth tokens will be stored unencrypted');
+            $this->logger?->warning(
+                'Trakt: no token encryption key; OAuth tokens will be stored unencrypted'
+            );
         }
     }
 
@@ -571,8 +574,12 @@ class TraktPlugin implements LifecycleInterface, ConfigurableInterface
      *
      * @return void
      */
-    private function scheduleAsyncScrobbleStart(MediaItem $mediaItem, float $progressPercent, string $accessToken, TraktApi $api): void
-    {
+    private function scheduleAsyncScrobbleStart(
+        MediaItem $mediaItem,
+        float $progressPercent,
+        string $accessToken,
+        TraktApi $api
+    ): void {
         if (class_exists(\Workerman\Timer::class)) {
             \Workerman\Timer::add(0, function () use ($mediaItem, $progressPercent, $accessToken, $api): void {
                 $this->executeScrobbleStart($mediaItem, $progressPercent, $accessToken, $api);
@@ -596,8 +603,13 @@ class TraktPlugin implements LifecycleInterface, ConfigurableInterface
      *
      * @return void
      */
-    private function executeScrobbleStart(MediaItem $mediaItem, float $progressPercent, string $accessToken, TraktApi $api): void
-    {
+    private function executeScrobbleStart(
+        MediaItem $mediaItem,
+        float $progressPercent,
+        string $accessToken,
+        TraktApi $api
+    ): void {
+
         try {
             $api->scrobbleStart($mediaItem, $progressPercent, $accessToken);
 
@@ -642,8 +654,12 @@ class TraktPlugin implements LifecycleInterface, ConfigurableInterface
      *
      * @return void
      */
-    private function scheduleAsyncScrobbleStop(MediaItem $mediaItem, float $progressPercent, string $accessToken, TraktApi $api): void
-    {
+    private function scheduleAsyncScrobbleStop(
+        MediaItem $mediaItem,
+        float $progressPercent,
+        string $accessToken,
+        TraktApi $api
+    ): void {
         if (class_exists(\Workerman\Timer::class)) {
             \Workerman\Timer::add(0, function () use ($mediaItem, $progressPercent, $accessToken, $api): void {
                 $this->executeScrobbleStop($mediaItem, $progressPercent, $accessToken, $api);
@@ -667,8 +683,13 @@ class TraktPlugin implements LifecycleInterface, ConfigurableInterface
      *
      * @return void
      */
-    private function executeScrobbleStop(MediaItem $mediaItem, float $progressPercent, string $accessToken, TraktApi $api): void
-    {
+    private function executeScrobbleStop(
+        MediaItem $mediaItem,
+        float $progressPercent,
+        string $accessToken,
+        TraktApi $api
+    ): void {
+
         try {
             $api->scrobbleStop($mediaItem, $progressPercent, $accessToken);
 
@@ -713,8 +734,12 @@ class TraktPlugin implements LifecycleInterface, ConfigurableInterface
      *
      * @return void
      */
-    private function scheduleAsyncScrobblePause(MediaItem $mediaItem, float $progressPercent, string $accessToken, TraktApi $api): void
-    {
+    private function scheduleAsyncScrobblePause(
+        MediaItem $mediaItem,
+        float $progressPercent,
+        string $accessToken,
+        TraktApi $api
+    ): void {
         if (class_exists(\Workerman\Timer::class)) {
             \Workerman\Timer::add(0, function () use ($mediaItem, $progressPercent, $accessToken, $api): void {
                 $this->executeScrobblePause($mediaItem, $progressPercent, $accessToken, $api);
@@ -735,8 +760,13 @@ class TraktPlugin implements LifecycleInterface, ConfigurableInterface
      *
      * @return void
      */
-    private function executeScrobblePause(MediaItem $mediaItem, float $progressPercent, string $accessToken, TraktApi $api): void
-    {
+    private function executeScrobblePause(
+        MediaItem $mediaItem,
+        float $progressPercent,
+        string $accessToken,
+        TraktApi $api
+    ): void {
+
         try {
             $api->scrobblePause($mediaItem, $progressPercent, $accessToken);
 

@@ -1,0 +1,17 @@
+parameters:
+    level: 8
+    paths:
+        - src
+    treatPhpDocTypesAsCertain: false
+    ignoreErrors:
+        # External host dependencies not available in plugin scope
+        - '#Class .* not found#'
+        - '#Call to (static )?method .* on an unknown class#'
+        - '#Instantiated class .* not found#'
+        - '#Property .* has unknown class#'
+        - '#Parameter .* has invalid type#'
+        - '#Method .* has invalid (return type|class)#'
+        - '#Access to property .* on an unknown class#'
+        - '#PHPDoc tag @var for variable .* contains unknown class#'
+        - '#Access to constant .* on an unknown class#'
+        - '#Call to an undefined method object::#'
