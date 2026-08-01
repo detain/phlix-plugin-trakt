@@ -103,6 +103,111 @@ final class TraktPortedClassesTest extends TestCase
         $this->assertNull($store->consume('never-issued'));
     }
 
+    public function testDbStorePutInsertsWithCorrectTtlParameter(): void
+    {
+        $db = new TestableConnection();
+        $store = new DbTraktOAuthStateStore($db, 300); // 5 minutes TTL
+
+        $store->put('state-123', 'verifier-abc');
+
+        $calls = $db->getCalls();
+        $this->assertCount(1, $calls);
+        $this->assertStringContainsString('INSERT INTO oauth_state_store', $calls[0]['sql']);
+
+        // Verify the expires_at parameter is ~5 minutes in the future
+        $params = $calls[0]['params'];
+        $expiresAt = $params[4] ?? null;
+        $this->assertNotNull($expiresAt);
+        // expires_at should be time() + 300 (with small tolerance)
+        $this->assertGreaterThanOrEqual(time() + 299, $expiresAt);
+        $this->assertLessThanOrEqual(time() + 301, $expiresAt);
+    }
+
+    public function testDbStorePutInsertsWithDefaultTtlWhenZeroProvided(): void
+    {
+        $db = new TestableConnection();
+        // Passing 0 as TTL should fall back to default (600 seconds)
+        $store = new DbTraktOAuthStateStore($db, 0);
+
+        $store->put('state-xyz', 'verifier-456');
+
+        $calls = $db->getCalls();
+        $params = $calls[0]['params'];
+        $expiresAt = $params[4] ?? null;
+        $this->assertNotNull($expiresAt);
+        // Default TTL is 600 seconds, so expires_at should be time() + 600
+        $this->assertGreaterThanOrEqual(time() + 599, $expiresAt);
+        $this->assertLessThanOrEqual(time() + 601, $expiresAt);
+    }
+
+    public function testDbStoreConsumeCleanupCalledEvenOnSuccess(): void
+    {
+        $db = new TestableConnection();
+        // SELECT returns the stored row, DELETE, cleanup DELETE
+        $db->setResults([
+            [['data' => json_encode(['code_verifier' => 'verifier-abc'])]],
+            [],
+            [],
+        ]);
+        $store = new DbTraktOAuthStateStore($db);
+
+        $verifier = $store->consume('state-123');
+
+        $this->assertSame('verifier-abc', $verifier);
+        // Verify cleanup DELETE was called (3rd call)
+        $calls = $db->getCalls();
+        $this->assertCount(3, $calls);
+        $this->assertStringContainsString('DELETE FROM oauth_state_store WHERE expires_at', $calls[2]['sql']);
+    }
+
+    public function testDbStoreConsumeWithEmptyCodeVerifierReturnsNull(): void
+    {
+        $db = new TestableConnection();
+        // SELECT returns a row with empty code_verifier
+        $db->setResults([
+            [['data' => json_encode(['code_verifier' => ''])]],
+            [],
+            [],
+        ]);
+        $store = new DbTraktOAuthStateStore($db);
+
+        $result = $store->consume('state-123');
+
+        $this->assertNull($result);
+    }
+
+    public function testDbStoreConsumeWithMalformedJsonReturnsNull(): void
+    {
+        $db = new TestableConnection();
+        // SELECT returns a row with invalid JSON
+        $db->setResults([
+            [['data' => 'not-valid-json{']],
+            [],
+            [],
+        ]);
+        $store = new DbTraktOAuthStateStore($db);
+
+        $result = $store->consume('state-123');
+
+        $this->assertNull($result);
+    }
+
+    public function testDbStoreConsumeWithMissingDataFieldReturnsNull(): void
+    {
+        $db = new TestableConnection();
+        // SELECT returns a row with no data field
+        $db->setResults([
+            [[]],
+            [],
+            [],
+        ]);
+        $store = new DbTraktOAuthStateStore($db);
+
+        $result = $store->consume('state-123');
+
+        $this->assertNull($result);
+    }
+
     // --- TraktOperatorConfig -----------------------------------------------
 
     public function testSettingKeyMapCoversTheThreeCredentialKeys(): void

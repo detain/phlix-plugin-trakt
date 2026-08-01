@@ -541,6 +541,30 @@ final class TraktApiTest extends TestCase
         $this->assertSame(7, $http->lastData['episodes'][0]['number'] ?? null);
     }
 
+    public function testAddRatingSendsMandatoryTraktHeaders(): void
+    {
+        $http = new MockHttpClient([['added' => 1]]);
+        $api = new TraktApi($http, self::CLIENT_ID, self::CLIENT_SECRET, new NullLogger());
+
+        $api->addRating($this->makeMovieItem(), 7, 'rating-token');
+
+        $this->assertSame('2', $http->lastHeaders['trakt-api-version'] ?? null);
+        $this->assertSame(self::CLIENT_ID, $http->lastHeaders['trakt-api-key'] ?? null);
+        $this->assertSame('Bearer rating-token', $http->lastHeaders['Authorization'] ?? null);
+    }
+
+    public function testRemoveRatingSendsMandatoryTraktHeaders(): void
+    {
+        $http = new MockHttpClient([['deleted' => 1]]);
+        $api = new TraktApi($http, self::CLIENT_ID, self::CLIENT_SECRET, new NullLogger());
+
+        $api->removeRating($this->makeMovieItem(), 'remove-token');
+
+        $this->assertSame('2', $http->lastHeaders['trakt-api-version'] ?? null);
+        $this->assertSame(self::CLIENT_ID, $http->lastHeaders['trakt-api-key'] ?? null);
+        $this->assertSame('Bearer remove-token', $http->lastHeaders['Authorization'] ?? null);
+    }
+
     /**
      * Build a minimal movie MediaItem fixture for scrobble/history calls.
      *

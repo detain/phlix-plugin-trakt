@@ -311,6 +311,110 @@ final class TraktSettingsTest extends TestCase
         $this->assertNull(SodiumTokenCipher::fromConfig(''));
         $this->assertNull(SodiumTokenCipher::fromConfig('too-short'));
     }
+
+    /**
+     * Constructor rejects keys that are not exactly 32 bytes (SODIUM_CRYPTO_SECRETBOX_KEYBYTES).
+     */
+    public function testSodiumCipherConstructorRejectsInvalidKeyLength(): void
+    {
+        $this->expectException(\InvalidArgumentException::class);
+        $this->expectExceptionMessage('Trakt token encryption key must be exactly 32 bytes');
+        new SodiumTokenCipher('too-short');
+    }
+
+    /**
+     * Constructor rejects empty string.
+     */
+    public function testSodiumCipherConstructorRejectsEmptyKey(): void
+    {
+        $this->expectException(\InvalidArgumentException::class);
+        new SodiumTokenCipher('');
+    }
+
+    /**
+     * Constructor rejects keys that are too long.
+     */
+    public function testSodiumCipherConstructorRejectsOversizedKey(): void
+    {
+        $this->expectException(\InvalidArgumentException::class);
+        new SodiumTokenCipher(str_repeat("\x00", 64));
+    }
+
+    /**
+     * decrypt() with a payload shorter than the nonce length returns the original
+     * ciphertext rather than crashing.
+     */
+    public function testSodiumCipherDecryptWithPayloadShorterThanNonceReturnsOriginal(): void
+    {
+        $key = str_repeat("\x11", SODIUM_CRYPTO_SECRETBOX_KEYBYTES);
+        $cipher = new SodiumTokenCipher($key);
+
+        // Create a ciphertext that decodes to fewer bytes than the nonce (24 bytes)
+        $shortPayload = base64_encode('too-short');
+        $tampered = 'v1:' . $shortPayload;
+
+        $result = $cipher->decrypt($tampered);
+
+        $this->assertSame($tampered, $result);
+    }
+
+    /**
+     * decrypt() with an invalid base64 string returns the original ciphertext.
+     */
+    public function testSodiumCipherDecryptWithInvalidBase64ReturnsOriginal(): void
+    {
+        $key = str_repeat("\x11", SODIUM_CRYPTO_SECRETBOX_KEYBYTES);
+        $cipher = new SodiumTokenCipher($key);
+
+        // Create a tampered ciphertext with invalid base64 after the prefix
+        $tampered = 'v1:!!!not-valid-base64!!!';
+
+        $result = $cipher->decrypt($tampered);
+
+        $this->assertSame($tampered, $result);
+    }
+
+    /**
+     * decrypt() with a valid prefix but wrong key returns the original ciphertext.
+     */
+    public function testSodiumCipherDecryptWithWrongKeyReturnsOriginal(): void
+    {
+        $key1 = str_repeat("\x11", SODIUM_CRYPTO_SECRETBOX_KEYBYTES);
+        $key2 = str_repeat("\x22", SODIUM_CRYPTO_SECRETBOX_KEYBYTES);
+        $cipher1 = new SodiumTokenCipher($key1);
+        $cipher2 = new SodiumTokenCipher($key2);
+
+        // Encrypt with key1
+        $plaintext = 'secret-message';
+        $encrypted = $cipher1->encrypt($plaintext);
+
+        // Try to decrypt with key2 - should return original ciphertext
+        $result = $cipher2->decrypt($encrypted);
+
+        $this->assertSame($encrypted, $result);
+    }
+
+    /**
+     * decrypt() with tampered ciphertext (wrong nonce/body) returns original.
+     */
+    public function testSodiumCipherDecryptWithTamperedCiphertextReturnsOriginal(): void
+    {
+        $key = str_repeat("\x11", SODIUM_CRYPTO_SECRETBOX_KEYBYTES);
+        $cipher = new SodiumTokenCipher($key);
+
+        // Encrypt a message
+        $plaintext = 'secret-message';
+        $encrypted = $cipher->encrypt($plaintext);
+
+        // Tamper with the ciphertext bytes
+        $parts = explode(':', $encrypted, 2);
+        $tamperedPayload = base64_encode(str_repeat("\x00", SODIUM_CRYPTO_SECRETBOX_NONCEBYTES + 1) . 'tampered');
+        $tampered = 'v1:' . $tamperedPayload;
+
+        $result = $cipher->decrypt($tampered);
+
+        $this->assertSame($tampered, $result);
+    }
 }
 
 /**
