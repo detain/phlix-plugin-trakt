@@ -156,4 +156,50 @@ final class TraktPortedClassesTest extends TestCase
 
         $this->assertSame('file-id', $result['client_id']);
     }
+
+    // --- TraktOperatorConfig::load() ---------------------------------------
+
+    public function testLoadReturnsEmptyArrayWhenConfigFileNotFound(): void
+    {
+        $result = TraktOperatorConfig::load('/nonexistent/path/config.php', null);
+
+        $this->assertSame([], $result);
+    }
+
+    public function testLoadReadsConfigFileAndAppliesOverrides(): void
+    {
+        // Create a temporary config file
+        $tmpFile = sys_get_temp_dir() . '/trakt_test_config_' . uniqid() . '.php';
+        file_put_contents($tmpFile, '<?php return [\'client_id\' => \'file-id\', \'client_secret\' => \'file-secret\'];');
+
+        try {
+            $settings = new \Phlix\Admin\SettingsRepository([
+                'trakt.client_id' => ['value' => 'admin-id'],
+            ]);
+
+            $result = TraktOperatorConfig::load($tmpFile, $settings);
+
+            // Override should be applied
+            $this->assertSame('admin-id', $result['client_id']);
+            // Non-overridden value should remain
+            $this->assertSame('file-secret', $result['client_secret']);
+        } finally {
+            unlink($tmpFile);
+        }
+    }
+
+    public function testLoadReturnsEmptyArrayForNonArrayConfigFile(): void
+    {
+        // Create a temporary config file that returns a non-array
+        $tmpFile = sys_get_temp_dir() . '/trakt_test_config_' . uniqid() . '.php';
+        file_put_contents($tmpFile, '<?php return "not an array";');
+
+        try {
+            $result = TraktOperatorConfig::load($tmpFile, null);
+
+            $this->assertSame([], $result);
+        } finally {
+            unlink($tmpFile);
+        }
+    }
 }

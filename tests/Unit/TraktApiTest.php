@@ -329,6 +329,218 @@ final class TraktApiTest extends TestCase
         $this->assertSame(2, $episode['number'] ?? null);
     }
 
+    // --- Rating API tests (getRatings, addRating, removeRating) ------------
+
+    public function testGetRatingsCallsCorrectEndpoint(): void
+    {
+        $http = new MockHttpClient([[['movie' => ['ids' => ['trakt' => 1]], 'rating' => 8]]]);
+        $api = new TraktApi($http, self::CLIENT_ID, self::CLIENT_SECRET, new NullLogger());
+
+        $api->getRatings('testuser', 'access-token');
+
+        $this->assertSame('GET', $http->lastMethod);
+        $this->assertStringContainsString('/users/testuser/ratings', $http->lastUrl);
+    }
+
+    public function testGetRatingsSendsMandatoryTraktHeaders(): void
+    {
+        $http = new MockHttpClient([[]]);
+        $api = new TraktApi($http, self::CLIENT_ID, self::CLIENT_SECRET, new NullLogger());
+
+        $api->getRatings('testuser', 'history-token');
+
+        $this->assertSame('2', $http->lastHeaders['trakt-api-version'] ?? null);
+        $this->assertSame(self::CLIENT_ID, $http->lastHeaders['trakt-api-key'] ?? null);
+        $this->assertSame('Bearer history-token', $http->lastHeaders['Authorization'] ?? null);
+    }
+
+    public function testGetRatingsWithTypeFilterAddsTypeParam(): void
+    {
+        $http = new MockHttpClient([[]]);
+        $api = new TraktApi($http, self::CLIENT_ID, self::CLIENT_SECRET, new NullLogger());
+
+        $api->getRatings('testuser', 'access-token', 'movies');
+
+        $this->assertStringContainsString('type=movies', $http->lastUrl);
+    }
+
+    public function testGetRatingsWithAllTypeDoesNotAddTypeParam(): void
+    {
+        $http = new MockHttpClient([[]]);
+        $api = new TraktApi($http, self::CLIENT_ID, self::CLIENT_SECRET, new NullLogger());
+
+        $api->getRatings('testuser', 'access-token', 'all');
+
+        $this->assertStringNotContainsString('type=', $http->lastUrl);
+    }
+
+    public function testGetRatingsReturnsParsedResponse(): void
+    {
+        $ratings = [
+            ['movie' => ['ids' => ['trakt' => 1]], 'rating' => 8, 'rated_at' => '2024-01-01T00:00:00Z'],
+            ['movie' => ['ids' => ['trakt' => 2]], 'rating' => 10, 'rated_at' => '2024-01-02T00:00:00Z'],
+        ];
+        $http = new MockHttpClient([$ratings]);
+        $api = new TraktApi($http, self::CLIENT_ID, self::CLIENT_SECRET, new NullLogger());
+
+        $result = $api->getRatings('testuser', 'access-token');
+
+        $this->assertCount(2, $result);
+        $this->assertSame(8, $result[0]['rating']);
+    }
+
+    public function testAddRatingCallsCorrectEndpoint(): void
+    {
+        $http = new MockHttpClient([['added' => 1]]);
+        $api = new TraktApi($http, self::CLIENT_ID, self::CLIENT_SECRET, new NullLogger());
+
+        $api->addRating($this->makeMovieItem(), 7, 'access-token');
+
+        $this->assertSame('POST', $http->lastMethod);
+        $this->assertSame('https://api.trakt.tv/sync/ratings', $http->lastUrl);
+    }
+
+    public function testAddRatingSendsCorrectPayloadStructure(): void
+    {
+        $http = new MockHttpClient([['added' => 1]]);
+        $api = new TraktApi($http, self::CLIENT_ID, self::CLIENT_SECRET, new NullLogger());
+
+        $api->addRating($this->makeMovieItem(), 7, 'access-token');
+
+        $this->assertArrayHasKey('ratings', $http->lastData);
+        $this->assertCount(1, $http->lastData['ratings']);
+        $this->assertSame(7, $http->lastData['ratings'][0]['rating']);
+        $this->assertArrayHasKey('movie', $http->lastData['ratings'][0]);
+        $this->assertArrayNotHasKey('episode', $http->lastData['ratings'][0]);
+    }
+
+    public function testAddRatingClampsRatingToOneThroughTen(): void
+    {
+        $http = new MockHttpClient([['added' => 1]]);
+        $api = new TraktApi($http, self::CLIENT_ID, self::CLIENT_SECRET, new NullLogger());
+
+        // Test upper bound (11 should become 10)
+        $api->addRating($this->makeMovieItem(), 11, 'access-token');
+        $this->assertSame(10, $http->lastData['ratings'][0]['rating']);
+
+        // Test lower bound (0 should become 1)
+        $api->addRating($this->makeMovieItem(), 0, 'access-token');
+        $this->assertSame(1, $http->lastData['ratings'][0]['rating']);
+
+        // Test negative (-5 should become 1)
+        $api->addRating($this->makeMovieItem(), -5, 'access-token');
+        $this->assertSame(1, $http->lastData['ratings'][0]['rating']);
+    }
+
+    public function testAddRatingSkipsWhenNoExternalId(): void
+    {
+        $http = new MockHttpClient([['added' => 1]]);
+        $api = new TraktApi($http, self::CLIENT_ID, self::CLIENT_SECRET, new NullLogger());
+
+        $item = new \Phlix\Media\Library\MediaItem(
+            id: 'mi-no-id',
+            name: 'No-ID Movie',
+            type: 'movie',
+            path: '/movies/no-id.mkv',
+            metadata: [],
+        );
+
+        $result = $api->addRating($item, 5, 'access-token');
+
+        $this->assertTrue($result['skipped']);
+        $this->assertFalse($result['added']);
+        // HTTP client must never have been called.
+        $this->assertSame('', $http->lastMethod);
+    }
+
+    public function testAddRatingForEpisodePostsEpisodePayload(): void
+    {
+        $http = new MockHttpClient([['added' => 1]]);
+        $api = new TraktApi($http, self::CLIENT_ID, self::CLIENT_SECRET, new NullLogger());
+
+        $item = new \Phlix\Media\Library\MediaItem(
+            id: 'ep-rate',
+            name: 'Test Episode',
+            type: 'episode',
+            path: '/tv/show/s01e01.mkv',
+            metadata: ['tvdb_id' => 555, 'season_number' => 1, 'episode_number' => 2],
+        );
+
+        $api->addRating($item, 8, 'access-token');
+
+        $this->assertArrayHasKey('episode', $http->lastData['ratings'][0]);
+        $this->assertArrayNotHasKey('movie', $http->lastData['ratings'][0]);
+        $this->assertSame(555, $http->lastData['ratings'][0]['episode']['ids']['tvdb'] ?? null);
+        $this->assertSame(1, $http->lastData['ratings'][0]['episode']['season'] ?? null);
+        $this->assertSame(2, $http->lastData['ratings'][0]['episode']['number'] ?? null);
+    }
+
+    public function testRemoveRatingCallsCorrectEndpoint(): void
+    {
+        $http = new MockHttpClient([['deleted' => 1]]);
+        $api = new TraktApi($http, self::CLIENT_ID, self::CLIENT_SECRET, new NullLogger());
+
+        $api->removeRating($this->makeMovieItem(), 'access-token');
+
+        $this->assertSame('POST', $http->lastMethod);
+        $this->assertSame('https://api.trakt.tv/sync/ratings/remove', $http->lastUrl);
+    }
+
+    public function testRemoveRatingSendsCorrectPayloadStructure(): void
+    {
+        $http = new MockHttpClient([['deleted' => 1]]);
+        $api = new TraktApi($http, self::CLIENT_ID, self::CLIENT_SECRET, new NullLogger());
+
+        $api->removeRating($this->makeMovieItem(), 'access-token');
+
+        $this->assertArrayHasKey('movies', $http->lastData);
+        $this->assertArrayNotHasKey('episodes', $http->lastData);
+        $this->assertCount(1, $http->lastData['movies']);
+        $this->assertSame(1, $http->lastData['movies'][0]['ids']['trakt'] ?? null);
+    }
+
+    public function testRemoveRatingSkipsWhenNoExternalId(): void
+    {
+        $http = new MockHttpClient([['deleted' => 1]]);
+        $api = new TraktApi($http, self::CLIENT_ID, self::CLIENT_SECRET, new NullLogger());
+
+        $item = new \Phlix\Media\Library\MediaItem(
+            id: 'mi-no-id',
+            name: 'No-ID Movie',
+            type: 'movie',
+            path: '/movies/no-id.mkv',
+            metadata: [],
+        );
+
+        $result = $api->removeRating($item, 'access-token');
+
+        $this->assertTrue($result['skipped']);
+        $this->assertFalse($result['deleted']);
+        $this->assertSame('', $http->lastMethod);
+    }
+
+    public function testRemoveRatingForEpisodeSendsEpisodesPayload(): void
+    {
+        $http = new MockHttpClient([['deleted' => 1]]);
+        $api = new TraktApi($http, self::CLIENT_ID, self::CLIENT_SECRET, new NullLogger());
+
+        $item = new \Phlix\Media\Library\MediaItem(
+            id: 'ep-unrate',
+            name: 'Test Episode',
+            type: 'episode',
+            path: '/tv/show/s01e01.mkv',
+            metadata: ['tvdb_id' => 555, 'season_number' => 3, 'episode_number' => 7],
+        );
+
+        $api->removeRating($item, 'access-token');
+
+        $this->assertArrayHasKey('episodes', $http->lastData);
+        $this->assertArrayNotHasKey('movies', $http->lastData);
+        $this->assertSame(555, $http->lastData['episodes'][0]['ids']['tvdb'] ?? null);
+        $this->assertSame(3, $http->lastData['episodes'][0]['season'] ?? null);
+        $this->assertSame(7, $http->lastData['episodes'][0]['number'] ?? null);
+    }
+
     /**
      * Build a minimal movie MediaItem fixture for scrobble/history calls.
      *

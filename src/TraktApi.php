@@ -510,15 +510,14 @@ class TraktApi
             ];
         }
 
-        $payload = [
-            'ratings' => [
-                [
-                    'movie' => $movie,
-                    'episode' => $episode,
-                    'rating' => $rating,
-                ],
-            ],
-        ];
+        // Build the ratings item with only the relevant media type (not both)
+        $ratingItem = ['rating' => $rating];
+        if ($movie !== null) {
+            $ratingItem['movie'] = $movie;
+        } elseif ($episode !== null) {
+            $ratingItem['episode'] = $episode;
+        }
+        $payload = ['ratings' => [$ratingItem]];
 
         $response = $this->http->post(
             self::BASE_URL . '/sync/ratings',
@@ -596,9 +595,17 @@ class TraktApi
             'ids' => implode(',', array_filter($ids, fn($v) => $v !== null)),
         ];
 
+        // Build the remove payload with only the relevant media type (not both)
+        $removePayload = [];
+        if ($movie !== null) {
+            $removePayload['movies'] = [$movie];
+        } elseif ($episode !== null) {
+            $removePayload['episodes'] = [$episode];
+        }
+
         $response = $this->http->post(
             self::BASE_URL . '/sync/ratings/remove',
-            ['movies' => [$movie], 'episodes' => [$episode]],
+            $removePayload,
             $this->apiHeaders($accessToken)
         );
 

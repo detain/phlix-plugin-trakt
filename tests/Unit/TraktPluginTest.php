@@ -225,6 +225,145 @@ final class TraktPluginTest extends TestCase
         $this->assertFalse($settings->syncEnabled);
     }
 
+    // --- onDisable -----------------------------------------------------------
+
+    public function testOnDisableClearsReferences(): void
+    {
+        $api = new FakeTraktApi();
+        $plugin = new TraktPlugin(
+            $this->freshSettings(),
+            new NullLogger(),
+            $api,
+            new RecordingSettingsRepository(),
+        );
+
+        // Use reflection to set internal state before onDisable
+        $ref = new \ReflectionClass($plugin);
+        $itemRepoProp = $ref->getProperty('itemRepository');
+        $itemRepoProp->setAccessible(true);
+        $itemRepoProp->setValue($plugin, new FakeItemRepository());
+
+        $watchHistProp = $ref->getProperty('watchHistory');
+        $watchHistProp->setAccessible(true);
+        $watchHistProp->setValue($plugin, new \Phlix\Auth\WatchHistory());
+
+        $plugin->onDisable();
+
+        $this->assertNull($itemRepoProp->getValue($plugin));
+        $this->assertNull($watchHistProp->getValue($plugin));
+    }
+
+    // --- runScheduledSync ----------------------------------------------------
+
+    public function testRunScheduledSyncDoesNothingWhenNotConfigured(): void
+    {
+        $api = new FakeTraktApi();
+        $settings = new TraktSettings(
+            accessToken: null,
+            refreshToken: null,
+            username: '', // not configured
+            syncEnabled: true,
+        );
+
+        $plugin = new TraktPlugin($settings, new NullLogger(), $api);
+
+        // Use reflection to set internal collaborators for this test
+        $ref = new \ReflectionClass($plugin);
+        $apiProp = $ref->getProperty('api');
+        $apiProp->setAccessible(true);
+        $apiProp->setValue($plugin, $api);
+
+        $watchHistProp = $ref->getProperty('watchHistory');
+        $watchHistProp->setAccessible(true);
+        $watchHistProp->setValue($plugin, new \Phlix\Auth\WatchHistory());
+
+        $dbProp = $ref->getProperty('db');
+        $dbProp->setAccessible(true);
+        $dbProp->setValue($plugin, new \Workerman\MySQL\TestableConnection());
+
+        // Use reflection to call runScheduledSync
+        $method = $ref->getMethod('runScheduledSync');
+        $method->setAccessible(true);
+        $method->invoke($plugin);
+
+        // No scrobble or refresh should happen when not configured
+        $this->assertSame(0, $api->refreshCalls);
+        $this->assertSame(0, $api->scrobbleStartCalls);
+        $this->assertSame(0, $api->scrobbleStopCalls);
+    }
+
+    public function testRunScheduledSyncDoesNothingWhenSyncDisabled(): void
+    {
+        $api = new FakeTraktApi();
+        $settings = new TraktSettings(
+            accessToken: 'a',
+            refreshToken: 'r',
+            username: 'testuser',
+            syncEnabled: false, // sync disabled
+        );
+
+        $plugin = new TraktPlugin($settings, new NullLogger(), $api);
+
+        // Use reflection to set internal collaborators
+        $ref = new \ReflectionClass($plugin);
+        $apiProp = $ref->getProperty('api');
+        $apiProp->setAccessible(true);
+        $apiProp->setValue($plugin, $api);
+
+        $watchHistProp = $ref->getProperty('watchHistory');
+        $watchHistProp->setAccessible(true);
+        $watchHistProp->setValue($plugin, new \Phlix\Auth\WatchHistory());
+
+        $dbProp = $ref->getProperty('db');
+        $dbProp->setAccessible(true);
+        $dbProp->setValue($plugin, new \Workerman\MySQL\TestableConnection());
+
+        $method = $ref->getMethod('runScheduledSync');
+        $method->setAccessible(true);
+        $method->invoke($plugin);
+
+        $this->assertSame(0, $api->refreshCalls);
+    }
+
+    public function testRunScheduledSyncCallsHistorySyncOnConfiguredPlugin(): void
+    {
+        $api = new FakeTraktApi();
+        $settings = new TraktSettings(
+            accessToken: 'a',
+            refreshToken: 'r',
+            username: 'testuser',
+            syncEnabled: true,
+        );
+
+        // Create a custom plugin that records makeHistorySync calls
+        $seam = new RecordingHistorySync(
+            $api,
+            new \Phlix\Auth\WatchHistory(),
+            $settings,
+            new \Workerman\MySQL\TestableConnection(),
+            new NullLogger(),
+        );
+        $seam->returnValue = 5;
+
+        $plugin = new SeamTraktPlugin($settings, new NullLogger(), $api, new RecordingSettingsRepository());
+        $plugin->historySyncSeam = $seam;
+
+        $ref = new \ReflectionClass($plugin);
+        $watchHistProp = $ref->getProperty('watchHistory');
+        $watchHistProp->setAccessible(true);
+        $watchHistProp->setValue($plugin, new \Phlix\Auth\WatchHistory());
+
+        $dbProp = $ref->getProperty('db');
+        $dbProp->setAccessible(true);
+        $dbProp->setValue($plugin, new \Workerman\MySQL\TestableConnection());
+
+        $method = $ref->getMethod('runScheduledSync');
+        $method->setAccessible(true);
+        $method->invoke($plugin);
+
+        $this->assertSame('default', $seam->lastProfileId);
+    }
+
     // --- B2: token-refresh wiring + persistence -----------------------------
 
     /**
