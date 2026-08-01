@@ -349,11 +349,11 @@ final class TraktPluginTest extends TestCase
         $plugin->historySyncSeam = $seam;
 
         $ref = new \ReflectionClass($plugin);
-        $watchHistProp = $ref->getProperty('watchHistory');
+        $watchHistProp = $ref->getParentClass()->getProperty('watchHistory');
         $watchHistProp->setAccessible(true);
         $watchHistProp->setValue($plugin, new \Phlix\Auth\WatchHistory());
 
-        $dbProp = $ref->getProperty('db');
+        $dbProp = $ref->getParentClass()->getProperty('db');
         $dbProp->setAccessible(true);
         $dbProp->setValue($plugin, new \Workerman\MySQL\TestableConnection());
 
