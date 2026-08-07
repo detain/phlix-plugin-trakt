@@ -3,10 +3,25 @@
          xsi:noNamespaceSchemaLocation="vendor/phpunit/phpunit/phpunit.xsd"
          bootstrap="tests/bootstrap.php"
          colors="true"
-         cacheDirectory=".phpunit.cache">
+         cacheDirectory=".phpunit.cache"
+         defaultTestSuite="Unit">
+    <!--
+        The default suite is deterministic and makes NO network requests.
+
+        S250: the Network suite talks to httpbin.org, a third-party service that
+        intermittently answers 5xx or times out. It turned master red on its own
+        schedule, so it is deliberately NOT part of the default run. It is not
+        deleted (it still covers the live cURL round trip); run it on demand by
+        selecting the Network testsuite on the phpunit command line. See the
+        header of tests/Network/HttpClientNetworkTest.php.
+    -->
     <testsuites>
         <testsuite name="Unit">
             <directory>tests</directory>
+            <exclude>tests/Network</exclude>
+        </testsuite>
+        <testsuite name="Network">
+            <directory>tests/Network</directory>
         </testsuite>
     </testsuites>
     <source>
