@@ -59,6 +59,7 @@ class HttpClient implements HttpClientInterface
      *
      * @throws TraktApiException
      * @throws TraktAuthenticationException
+     * @throws TraktRateLimitException
      */
     private function request(string $method, string $url, array $data, array $headers): array
     {
@@ -112,6 +113,7 @@ class HttpClient implements HttpClientInterface
      *
      * @throws TraktApiException
      * @throws TraktAuthenticationException
+     * @throws TraktRateLimitException
      */
     private function requestAsync(string $method, string $url, array $data, array $headers): array
     {
@@ -162,7 +164,12 @@ class HttpClient implements HttpClientInterface
         $httpCode = (int) $response->getStatusCode();
         $raw = (string) $response->getBody();
 
-        return $this->parseResponse($httpCode, $raw);
+        $responseHeaders = [];
+        if (method_exists($response, 'getHeaders')) {
+            $responseHeaders = (array) $response->getHeaders();
+        }
+
+        return $this->parseResponse($httpCode, $raw, $responseHeaders);
     }
 
     /**
@@ -180,6 +187,7 @@ class HttpClient implements HttpClientInterface
      *
      * @throws TraktApiException
      * @throws TraktAuthenticationException
+     * @throws TraktRateLimitException
      */
     private function requestCurl(string $method, string $url, array $data, array $headers): array
     {
@@ -190,10 +198,27 @@ class HttpClient implements HttpClientInterface
             $requestHeaders[] = $key . ': ' . $value;
         }
 
+        // Captured by the CURLOPT_HEADERFUNCTION callback below: one entry per
+        // response header line, normalised to an associative name => value map.
+        $responseHeaders = [];
+
         curl_setopt_array($ch, [
             CURLOPT_RETURNTRANSFER => true,
             CURLOPT_TIMEOUT => $this->timeout,
             CURLOPT_HTTPHEADER => $requestHeaders,
+            CURLOPT_HEADERFUNCTION => static function (mixed $ch, string $line) use (&$responseHeaders): int {
+                $colonPos = strpos($line, ':');
+                if ($colonPos === false) {
+                    // Status lines (HTTP/1.1 200 OK) carry no colon; skip them.
+                    return strlen($line);
+                }
+
+                $name = trim(substr($line, 0, $colonPos));
+                $value = trim(substr($line, $colonPos + 1));
+                $responseHeaders[$name] = $value;
+
+                return strlen($line);
+            },
             // TLS verification - explicitly enabled for security
             CURLOPT_SSL_VERIFYPEER => true,
             CURLOPT_SSL_VERIFYHOST => 2,
@@ -225,27 +250,42 @@ class HttpClient implements HttpClientInterface
             throw new TraktApiException('cURL error: ' . $error);
         }
 
-        return $this->parseResponse((int) $httpCode, $raw);
+        return $this->parseResponse((int) $httpCode, $raw, $responseHeaders);
     }
 
     /**
      * Map an HTTP status + raw body to a decoded array or the right exception.
      *
      * Shared by the async and cURL transports so both paths raise identical
-     * errors (401 → auth, >= 400 → API error) and decode identically.
+     * errors (401 → auth, 429 → rate limit with a real Retry-After read,
+     * >= 400 → API error) and decode identically.
      *
      * @param int $httpCode HTTP status code
      * @param string $raw Raw response body
+     * @param array<string, string|int|array{0: string|int}> $headers Response
+     *        headers as an associative name => value map. The cURL transport
+     *        normalises to this shape via CURLOPT_HEADERFUNCTION; the async
+     *        transport passes through what the client's getHeaders() returns
+     *        (repeated headers may be arrays — the first element is used).
      *
      * @return array<string, mixed>
      *
      * @throws TraktApiException
      * @throws TraktAuthenticationException
+     * @throws TraktRateLimitException
      */
-    private function parseResponse(int $httpCode, string $raw): array
+    private function parseResponse(int $httpCode, string $raw, array $headers = []): array
     {
         if ($httpCode === 401) {
             throw new TraktAuthenticationException('Unauthorized - token invalid or expired');
+        }
+
+        if ($httpCode === 429) {
+            $decoded = json_decode($raw, true);
+            $decoded = is_array($decoded) ? $decoded : [];
+            $message = is_string($decoded['error'] ?? null) ? $decoded['error']
+                : (is_string($decoded['message'] ?? null) ? $decoded['message'] : 'Rate limit exceeded');
+            throw new TraktRateLimitException($message, self::extractRetryAfter($headers));
         }
 
         if ($httpCode >= 400) {
@@ -260,5 +300,40 @@ class HttpClient implements HttpClientInterface
 
         /** @var array<string, mixed> */
         return is_array($decoded) ? $decoded : [];
+    }
+
+    /**
+     * Extract the Retry-After header value as an integer number of seconds.
+     *
+     * Accepts the two shapes headers arrive in: an associative name => value
+     * map (the shape the cURL CURLOPT_HEADERFUNCTION callback normalises to),
+     * or a map where repeated headers are arrays (the shape Workerman/swoole
+     * may produce) — for those the first element is used. Lookup is
+     * case-insensitive, per the HTTP header-name rules.
+     *
+     * @param array<string, string|int|array{0: string|int}> $headers Header map
+     *
+     * @return int Seconds to wait before retrying; 0 when the header is
+     *              missing or its value is not numeric.
+     */
+    private static function extractRetryAfter(array $headers): int
+    {
+        foreach ($headers as $name => $value) {
+            if (strcasecmp((string) $name, 'Retry-After') !== 0) {
+                continue;
+            }
+
+            if (is_array($value)) {
+                $value = $value[0] ?? null;
+            }
+
+            if (!is_string($value) && !is_int($value)) {
+                return 0;
+            }
+
+            return (int) trim((string) $value);
+        }
+
+        return 0;
     }
 }

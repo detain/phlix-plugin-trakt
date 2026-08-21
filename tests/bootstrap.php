@@ -8,6 +8,20 @@ require_once __DIR__ . '/../vendor/autoload.php';
 // Load Workerman MySQL Connection stub for testing
 require_once __DIR__ . '/stubs/Workerman/MySQL/Connection.php';
 
+// Load Workerman HTTP client stubs for testing (requestAsync coverage). The
+// real classes are host-supplied by phlix-server and are not in this plugin's
+// dependency closure, so the stubs are registered unless the host already
+// provided them.
+if (!class_exists(\Workerman\Worker::class)) {
+    require_once __DIR__ . '/stubs/Workerman/Worker.php';
+}
+if (!class_exists(\Workerman\Http\Response::class)) {
+    require_once __DIR__ . '/stubs/Workerman/Http/Response.php';
+}
+if (!class_exists(\Workerman\Http\Client::class)) {
+    require_once __DIR__ . '/stubs/Workerman/Http/Client.php';
+}
+
 /**
  * Stub for host-supplied Phlix\Auth\WatchHistory class.
  *
