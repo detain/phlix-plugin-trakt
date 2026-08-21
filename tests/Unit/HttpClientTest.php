@@ -26,9 +26,11 @@ use PHPUnit\Framework\TestCase;
  * tests/Network/HttpClientNetworkTest.php and are excluded from the default
  * suite; see that file's header for what they do and do not cover.
  *
- * Note: the cURL fallback path is the one under test because the test
- * environment has no running Workerman event loop. The async path
- * (requestAsync) is only exercised in a real Workerman context.
+ * Note: the cURL fallback path is under test here. The async path
+ * (requestAsync) — the branch the resident worker actually uses — has its own
+ * coverage in HttpClientAsyncTest.php, which drives it through Workerman
+ * stubs in deterministic mode and through real Swoole round trips for the
+ * wire-verified cases.
  */
 final class HttpClientTest extends TestCase
 {
