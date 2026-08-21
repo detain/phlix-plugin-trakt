@@ -7,6 +7,7 @@ namespace Phlix\Tests\Unit\Plugins\Scrobbler\Trakt;
 use Phlix\Plugins\Scrobbler\Trakt\HttpClient;
 use Phlix\Plugins\Scrobbler\Trakt\TraktApiException;
 use Phlix\Plugins\Scrobbler\Trakt\TraktAuthenticationException;
+use Phlix\Plugins\Scrobbler\Trakt\TraktRateLimitException;
 use PHPUnit\Framework\TestCase;
 
 /**
@@ -25,9 +26,11 @@ use PHPUnit\Framework\TestCase;
  * tests/Network/HttpClientNetworkTest.php and are excluded from the default
  * suite; see that file's header for what they do and do not cover.
  *
- * Note: the cURL fallback path is the one under test because the test
- * environment has no running Workerman event loop. The async path
- * (requestAsync) is only exercised in a real Workerman context.
+ * Note: the cURL fallback path is under test here. The async path
+ * (requestAsync) — the branch the resident worker actually uses — has its own
+ * coverage in HttpClientAsyncTest.php, which drives it through Workerman
+ * stubs in deterministic mode and through real Swoole round trips for the
+ * wire-verified cases.
  */
 final class HttpClientTest extends TestCase
 {
@@ -36,17 +39,18 @@ final class HttpClientTest extends TestCase
      *
      * @param int $httpCode HTTP status code
      * @param string $raw Raw response body
+     * @param array<string, string|int|array{0: string|int}> $headers Response headers
      *
      * @return array<string, mixed>
      */
-    private function parseResponse(int $httpCode, string $raw): array
+    private function parseResponse(int $httpCode, string $raw, array $headers = []): array
     {
         $client = new HttpClient(timeout: 1);
         $method = new \ReflectionMethod($client, 'parseResponse');
         $method->setAccessible(true);
 
         /** @var array<string, mixed> $result */
-        $result = $method->invoke($client, $httpCode, $raw);
+        $result = $method->invoke($client, $httpCode, $raw, $headers);
 
         return $result;
     }
@@ -84,7 +88,6 @@ final class HttpClientTest extends TestCase
             '404 not found' => [404],
             '409 conflict' => [409],
             '422 unprocessable' => [422],
-            '429 rate limited' => [429],
             '500 server error' => [500],
             '502 bad gateway' => [502],
             '503 unavailable' => [503],
@@ -189,6 +192,122 @@ final class HttpClientTest extends TestCase
         } catch (TraktApiException $e) {
             $this->assertSame('HTTP 500', $e->getMessage());
         }
+    }
+
+    // --- 429 rate limit branch ----------------------------------------------
+
+    /**
+     * A 429 must throw TraktRateLimitException with the body's error message
+     * (error key, then message key, then the 'Rate limit exceeded' default).
+     */
+    public function test429WithBodyErrorMessageThrowsRateLimitException(): void
+    {
+        try {
+            $this->parseResponse(429, '{"error":"too many requests"}');
+            $this->fail('Expected TraktRateLimitException');
+        } catch (TraktRateLimitException $e) {
+            $this->assertSame('too many requests', $e->getMessage());
+            $this->assertSame(429, $e->getCode());
+            $this->assertSame(0, $e->retryAfter, 'no Retry-After header means 0 seconds');
+        }
+    }
+
+    /**
+     * Header lookup must be case-insensitive: a lowercase `retry-after` name
+     * (the shape Swoole/Workerman normalise to) still yields the value.
+     */
+    public function test429ReadsCaseInsensitiveRetryAfterHeader(): void
+    {
+        try {
+            $this->parseResponse(429, '{"error":"rate limited"}', ['retry-after' => '30']);
+            $this->fail('Expected TraktRateLimitException');
+        } catch (TraktRateLimitException $e) {
+            $this->assertSame(30, $e->retryAfter);
+        }
+    }
+
+    public function test429WithoutRetryAfterHeaderDefaultsToZero(): void
+    {
+        try {
+            $this->parseResponse(429, '{"error":"rate limited"}', ['X-Rate-Limit' => '42']);
+            $this->fail('Expected TraktRateLimitException');
+        } catch (TraktRateLimitException $e) {
+            $this->assertSame(0, $e->retryAfter);
+        }
+    }
+
+    /**
+     * Control: only 429 becomes a rate-limit failure. A 400/500 must remain a
+     * plain TraktApiException, or the dedicated branch would swallow errors.
+     */
+    public function testNon429StatusesAreNotRateLimitExceptions(): void
+    {
+        foreach ([400, 500] as $status) {
+            try {
+                $this->parseResponse($status, '');
+                $this->fail('Expected TraktApiException for HTTP ' . $status);
+            } catch (TraktApiException $e) {
+                $this->assertNotInstanceOf(TraktRateLimitException::class, $e);
+                $this->assertSame('HTTP ' . $status, $e->getMessage());
+            }
+        }
+    }
+
+    // --- header-line parsing (cURL HEADERFUNCTION) -------------------------
+
+    public function testParseHeaderLineParsesNameValuePair(): void
+    {
+        $client = new HttpClient(timeout: 1);
+        $method = new \ReflectionMethod($client, 'parseHeaderLine');
+        $method->setAccessible(true);
+
+        /** @var array{0: string, 1: string}|null $pair */
+        $pair = $method->invoke($client, 'Retry-After: 42');
+
+        $this->assertIsArray($pair);
+        $this->assertSame('Retry-After', $pair[0]);
+        $this->assertSame('42', $pair[1]);
+    }
+
+    public function testParseHeaderLineSkipsStatusLine(): void
+    {
+        $client = new HttpClient(timeout: 1);
+        $method = new \ReflectionMethod($client, 'parseHeaderLine');
+        $method->setAccessible(true);
+
+        $this->assertNull($method->invoke($client, 'HTTP/1.1 200 OK'));
+    }
+
+    public function testParseHeaderLineSkipsMalformedLine(): void
+    {
+        $client = new HttpClient(timeout: 1);
+        $method = new \ReflectionMethod($client, 'parseHeaderLine');
+        $method->setAccessible(true);
+
+        $this->assertNull($method->invoke($client, 'no-colon-here'));
+    }
+
+    // --- Retry-After extraction (both header shapes + clamping) -------------
+
+    public function testExtractRetryAfterReadsArrayValuedHeader(): void
+    {
+        // The PSR-7 shape the Workerman async transport produces: lowercased
+        // name, value wrapped in an array. This pins the array branch of
+        // extractRetryAfter() directly, independent of stub behaviour.
+        $client = new HttpClient(timeout: 1);
+        $method = new \ReflectionMethod($client, 'extractRetryAfter');
+        $method->setAccessible(true);
+
+        $this->assertSame(30, $method->invoke($client, ['retry-after' => ['30']]));
+    }
+
+    public function testExtractRetryAfterClampsNegativeValuesToZero(): void
+    {
+        $client = new HttpClient(timeout: 1);
+        $method = new \ReflectionMethod($client, 'extractRetryAfter');
+        $method->setAccessible(true);
+
+        $this->assertSame(0, $method->invoke($client, ['Retry-After' => '-5']));
     }
 
     // --- success path ------------------------------------------------------

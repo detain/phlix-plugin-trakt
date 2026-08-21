@@ -31,7 +31,7 @@ final class TraktHistoryPaginationTest extends TestCase
     /**
      * @param list<list<array<string, mixed>>> $pages Successive API responses.
      */
-    private function syncWithPages(array $pages, TraktApi &$api = null): TraktHistorySync
+    private function syncWithPages(array $pages, ?TraktApi &$api = null): TraktHistorySync
     {
         $api = $this->createMock(TraktApi::class);
 
