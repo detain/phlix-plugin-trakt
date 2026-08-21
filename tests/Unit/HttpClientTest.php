@@ -251,6 +251,40 @@ final class HttpClientTest extends TestCase
         }
     }
 
+    // --- header-line parsing (cURL HEADERFUNCTION) -------------------------
+
+    public function testParseHeaderLineParsesNameValuePair(): void
+    {
+        $client = new HttpClient(timeout: 1);
+        $method = new \ReflectionMethod($client, 'parseHeaderLine');
+        $method->setAccessible(true);
+
+        /** @var array{0: string, 1: string}|null $pair */
+        $pair = $method->invoke($client, 'Retry-After: 42');
+
+        $this->assertIsArray($pair);
+        $this->assertSame('Retry-After', $pair[0]);
+        $this->assertSame('42', $pair[1]);
+    }
+
+    public function testParseHeaderLineSkipsStatusLine(): void
+    {
+        $client = new HttpClient(timeout: 1);
+        $method = new \ReflectionMethod($client, 'parseHeaderLine');
+        $method->setAccessible(true);
+
+        $this->assertNull($method->invoke($client, 'HTTP/1.1 200 OK'));
+    }
+
+    public function testParseHeaderLineSkipsMalformedLine(): void
+    {
+        $client = new HttpClient(timeout: 1);
+        $method = new \ReflectionMethod($client, 'parseHeaderLine');
+        $method->setAccessible(true);
+
+        $this->assertNull($method->invoke($client, 'no-colon-here'));
+    }
+
     // --- success path ------------------------------------------------------
 
     public function testSuccessfulResponseIsDecoded(): void

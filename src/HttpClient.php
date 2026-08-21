@@ -207,15 +207,10 @@ class HttpClient implements HttpClientInterface
             CURLOPT_TIMEOUT => $this->timeout,
             CURLOPT_HTTPHEADER => $requestHeaders,
             CURLOPT_HEADERFUNCTION => static function (mixed $ch, string $line) use (&$responseHeaders): int {
-                $colonPos = strpos($line, ':');
-                if ($colonPos === false) {
-                    // Status lines (HTTP/1.1 200 OK) carry no colon; skip them.
-                    return strlen($line);
+                $header = self::parseHeaderLine($line);
+                if ($header !== null) {
+                    $responseHeaders[$header[0]] = $header[1];
                 }
-
-                $name = trim(substr($line, 0, $colonPos));
-                $value = trim(substr($line, $colonPos + 1));
-                $responseHeaders[$name] = $value;
 
                 return strlen($line);
             },
@@ -303,6 +298,27 @@ class HttpClient implements HttpClientInterface
     }
 
     /**
+     * Parse one raw response header line into a name => value pair.
+     *
+     * Status lines (HTTP/1.1 200 OK) carry no colon and are not headers, so
+     * they yield null and the caller skips them.
+     *
+     * @param string $line A single header line without its trailing CRLF
+     *
+     * @return array{0: string, 1: string}|null The header name and value, or
+     *              null when the line is not a "name: value" header.
+     */
+    private static function parseHeaderLine(string $line): ?array
+    {
+        $colonPos = strpos($line, ':');
+        if ($colonPos === false) {
+            return null;
+        }
+
+        return [trim(substr($line, 0, $colonPos)), trim(substr($line, $colonPos + 1))];
+    }
+
+    /**
      * Extract the Retry-After header value as an integer number of seconds.
      *
      * Accepts the two shapes headers arrive in: an associative name => value
@@ -311,10 +327,14 @@ class HttpClient implements HttpClientInterface
      * may produce) — for those the first element is used. Lookup is
      * case-insensitive, per the HTTP header-name rules.
      *
+     * Only the delay-seconds form (RFC 9110) is understood: Trakt sends
+     * seconds, so an HTTP-date Retry-After value would be non-numeric and map
+     * to 0 (retry immediately). Negative values are clamped to 0.
+     *
      * @param array<string, string|int|array{0: string|int}> $headers Header map
      *
      * @return int Seconds to wait before retrying; 0 when the header is
-     *              missing or its value is not numeric.
+     *              missing, non-numeric, or negative.
      */
     private static function extractRetryAfter(array $headers): int
     {
@@ -331,7 +351,7 @@ class HttpClient implements HttpClientInterface
                 return 0;
             }
 
-            return (int) trim((string) $value);
+            return max(0, (int) trim((string) $value));
         }
 
         return 0;

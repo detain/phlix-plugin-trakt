@@ -128,12 +128,15 @@ class Client
                 return;
             }
 
-            $headers = [];
-            foreach ((array) $client->headers as $name => $value) {
-                $headers[(string) $name] = is_array($value) ? (string) ($value[0] ?? '') : (string) $value;
-            }
-
-            ($options['success'])(new Response((int) $client->getStatusCode(), $headers, (string) $client->getBody()));
+            // Pass the wire headers through untouched — Response normalizes
+            // them (lowercased names, array values) exactly like the real
+            // PSR-7 class, so the suite exercises the production shape.
+            $response = new Response(
+                (int) $client->getStatusCode(),
+                (array) $client->headers,
+                (string) $client->getBody(),
+            );
+            ($options['success'])($response);
             $client->close();
         });
     }

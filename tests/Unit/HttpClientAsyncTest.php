@@ -296,7 +296,13 @@ final class HttpClientAsyncTest extends TestCase
 
         \Swoole\Coroutine\go(static function () use ($server, $response): void {
             while (true) {
-                $conn = $server->accept();
+                // Accept with a 1s timeout: closing the listening socket (from
+                // the test's finally block) wakes accept() to return false on
+                // most Swoole builds. The timeout is belt-and-suspenders for
+                // builds where that wake-up does not happen — the loop then
+                // self-terminates within a second instead of hanging the Co\run
+                // container forever.
+                $conn = $server->accept(1.0);
                 if ($conn === false) {
                     // Listening socket closed by the test -> nothing to serve.
                     break;
