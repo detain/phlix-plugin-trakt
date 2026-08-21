@@ -287,6 +287,29 @@ final class HttpClientTest extends TestCase
         $this->assertNull($method->invoke($client, 'no-colon-here'));
     }
 
+    // --- Retry-After extraction (both header shapes + clamping) -------------
+
+    public function testExtractRetryAfterReadsArrayValuedHeader(): void
+    {
+        // The PSR-7 shape the Workerman async transport produces: lowercased
+        // name, value wrapped in an array. This pins the array branch of
+        // extractRetryAfter() directly, independent of stub behaviour.
+        $client = new HttpClient(timeout: 1);
+        $method = new \ReflectionMethod($client, 'extractRetryAfter');
+        $method->setAccessible(true);
+
+        $this->assertSame(30, $method->invoke($client, ['retry-after' => ['30']]));
+    }
+
+    public function testExtractRetryAfterClampsNegativeValuesToZero(): void
+    {
+        $client = new HttpClient(timeout: 1);
+        $method = new \ReflectionMethod($client, 'extractRetryAfter');
+        $method->setAccessible(true);
+
+        $this->assertSame(0, $method->invoke($client, ['Retry-After' => '-5']));
+    }
+
     // --- success path ------------------------------------------------------
 
     public function testSuccessfulResponseIsDecoded(): void
