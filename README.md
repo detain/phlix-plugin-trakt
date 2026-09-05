@@ -55,14 +55,19 @@ php bin/phlix plugin:install https://github.com/detain/phlix-plugin-trakt
 
 ```bash
 composer install
-vendor/bin/phpunit
+vendor/bin/phpunit                       # default: deterministic Unit suite
+vendor/bin/phpunit --testsuite Network   # live httpbin round trips, on demand
+php scripts/security-audit-check.php     # audit composer.lock (runtime + dev)
 ```
 
 The entry class is `Phlix\Plugins\Scrobbler\Trakt\TraktPlugin` (implements
 `Phlix\Shared\Plugin\LifecycleInterface`). It runs inside a Phlix server host,
 which provides the playback/library services at runtime. Host-supplied classes
-(`Phlix\Auth\WatchHistory`, `Phlix\Common\Uuid`, `Workerman\MySQL\Connection`)
-are stubbed from `tests/bootstrap.php` so the unit suite runs standalone.
+(`Phlix\Auth\WatchHistory`, `Phlix\Common\Uuid`, `Workerman\MySQL\Connection`,
+`Workerman\Worker`, `Workerman\Http\Client`) are stubbed from
+`tests/bootstrap.php` so the unit suite runs standalone. `phpunit.xml` sets the
+default suite to `Unit` and excludes `tests/Network/HttpClientNetworkTest.php`,
+which talks to a third-party service.
 
 ## License
 
