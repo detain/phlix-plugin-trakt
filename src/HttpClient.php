@@ -151,7 +151,15 @@ class HttpClient implements HttpClientInterface
 
         if ($state['error'] !== null) {
             $error = $state['error'];
-            $message = $error instanceof \Throwable ? $error->getMessage() : (string) $error;
+            if ($error instanceof \Throwable) {
+                $message = $error->getMessage();
+            } elseif (is_scalar($error)) {
+                $message = (string) $error;
+            } else {
+                // Non-throwable, non-scalar error payloads (arrays, plain objects)
+                // used to fatal on the string cast; report their type instead.
+                $message = gettype($error);
+            }
             throw new TraktApiException('HTTP error: ' . $message);
         }
 

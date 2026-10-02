@@ -286,10 +286,27 @@ class TraktHistorySync
             return $item['_resolved_media_item_id'];
         }
 
-        // TMDB is most reliable for movies, TVDB for shows, IMDB is universal fallback
+        return $this->findMediaItemIdByExternalIds($ids);
+    }
+
+    /**
+     * Resolve a local media item ID from a Trakt external-ID map.
+     *
+     * TMDB is most reliable for movies, TVDB for shows, IMDB is universal fallback.
+     * Malformed (non-scalar) ID values are skipped, mirroring the null/empty guard.
+     *
+     * @param array<mixed, mixed> $ids Trakt "ids" object with tmdb/tvdb/imdb keys
+     *
+     * @return string|null Local media_items.id if resolved, null otherwise.
+     */
+    private function findMediaItemIdByExternalIds(array $ids): ?string
+    {
         foreach (['tmdb', 'tvdb', 'imdb'] as $idType) {
             $externalId = $ids[$idType] ?? null;
             if ($externalId === null || $externalId === '') {
+                continue;
+            }
+            if (!is_scalar($externalId)) {
                 continue;
             }
 
@@ -299,6 +316,37 @@ class TraktHistorySync
             }
         }
 
+        return null;
+    }
+
+    /**
+     * Extract the id column from a db query result, if present.
+     *
+     * The host db abstraction returns mixed; this is the single typed boundary
+     * that parses a one-row SELECT result into its id value.
+     *
+     * @param mixed $result Raw db->query() return value.
+     *
+     * @return string|null The row's id as a string, null when absent.
+     */
+    private function parseIdColumnFromQueryResult(mixed $result): ?string
+    {
+        if (!is_array($result)) {
+            return null;
+        }
+
+        $row = $result[0] ?? null;
+        if (!is_array($row)) {
+            return null;
+        }
+
+        $id = $row['id'] ?? null;
+        if (is_string($id)) {
+            return $id;
+        }
+        if (is_int($id)) {
+            return (string) $id;
+        }
         return null;
     }
 
@@ -332,8 +380,9 @@ class TraktHistorySync
             [$jsonPath, $externalId]
         );
 
-        if (is_array($result) && isset($result[0]['id'])) {
-            return (string) $result[0]['id'];
+        $mediaItemId = $this->parseIdColumnFromQueryResult($result);
+        if ($mediaItemId !== null) {
+            return $mediaItemId;
         }
 
         // Fallback to LIKE pattern matching for older MySQL or edge cases
@@ -343,11 +392,7 @@ class TraktHistorySync
             [$likePattern]
         );
 
-        if (is_array($result) && isset($result[0]['id'])) {
-            return (string) $result[0]['id'];
-        }
-
-        return null;
+        return $this->parseIdColumnFromQueryResult($result);
     }
 
     /**
@@ -384,17 +429,17 @@ class TraktHistorySync
             );
         }
 
-        if (is_array($result) && isset($result[0]['id'])) {
+        $mediaItemId = $this->parseIdColumnFromQueryResult($result);
+        if ($mediaItemId !== null) {
             $this->logger->debug('TraktHistorySync: resolved media item via title/year fallback', [
                 'title' => $title,
                 'year' => $year,
                 'type' => $type,
-                'id' => $result[0]['id'],
+                'id' => $mediaItemId,
             ]);
-            return (string) $result[0]['id'];
         }
 
-        return null;
+        return $mediaItemId;
     }
 
     /**
@@ -581,16 +626,9 @@ class TraktHistorySync
         }
 
         // Try external ID matching first (most reliable)
-        foreach (['tmdb', 'tvdb', 'imdb'] as $idType) {
-            $externalId = $ids[$idType] ?? null;
-            if ($externalId === null || $externalId === '') {
-                continue;
-            }
-
-            $mediaItemId = $this->findMediaItemIdByExternalId($idType, (string) $externalId);
-            if ($mediaItemId !== null) {
-                return $mediaItemId;
-            }
+        $mediaItemId = $this->findMediaItemIdByExternalIds($ids);
+        if ($mediaItemId !== null) {
+            return $mediaItemId;
         }
 
         // Fall back to title/year matching
