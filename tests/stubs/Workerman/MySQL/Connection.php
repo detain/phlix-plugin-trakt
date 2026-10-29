@@ -10,6 +10,13 @@ namespace Workerman\MySQL;
  *
  * For testing, use TestableConnection which extends this class and allows
  * configuring the results returned by query().
+ *
+ * NOTE (review trakt__srphp C1, 2026-10-29): this stub must mirror the real
+ * upstream class — which exposes NO escape_* method. A fabricated
+ * real_escapeString() used to live here and kept every Trakt→Phlix pull test
+ * green while production fataled on the undefined method. Values travel as
+ * bound parameters through query($sql, $params) only; the seam is pinned by
+ * tests/Unit/TraktDbSeamTest.php.
  */
 class Connection
 {
@@ -34,20 +41,6 @@ class Connection
     {
         // Stub implementation - actual queries not executed in tests
         return [];
-    }
-
-    /**
-     * Escape a string for use in SQL queries.
-     *
-     * @param string $str String to escape
-     *
-     * @return string Escaped string
-     */
-    public function real_escapeString(string $str): string
-    {
-        // Simple stub: just return the string as-is for testing
-        // In production, this properly escapes SQL special characters
-        return str_replace(["'", '"', '\\', "\0"], ["''", '\\"', '\\\\', ''], $str);
     }
 
     /**

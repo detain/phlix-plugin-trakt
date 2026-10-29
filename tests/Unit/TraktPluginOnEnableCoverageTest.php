@@ -220,6 +220,8 @@ final class FakeItemRepositoryForCoverageTest
  */
 final class FakeDbConnection
 {
-    public function query(string $sql, array $params = []): array { return []; }
-    public function real_escapeString(string $s): string { return $s; }
+    public function query(string $sql, array $params = []): array
+    {
+        return [];
+    }
 }

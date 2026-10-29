@@ -358,8 +358,9 @@ class TraktHistorySync
      *
      * Uses JSON_EXTRACT when available (MySQL 5.7+) for reliable extraction,
      * falling back to LIKE pattern matching for older MySQL versions.
-     * All external ID values are escaped to prevent SQL injection via
-     * malformed ID strings.
+     * All values travel as bound parameters through query($sql, $params):
+     * the production \Workerman\MySQL\Connection is PDO-based and exposes no
+     * escaping primitive (review trakt__srphp C1).
      *
      * @param string $idType tmdb, tvdb, or imdb
      * @param string $externalId The external ID value
@@ -368,9 +369,9 @@ class TraktHistorySync
      */
     private function findMediaItemIdByExternalId(string $idType, string $externalId): ?string
     {
-        // Escape the external ID to prevent SQL injection in LIKE pattern
-        $escapedId = $this->db->real_escapeString($externalId);
-        $likePattern = '%"' . $idType . '_id":"' . $escapedId . '"%';
+        // LIKE fallback pattern; the raw value is safe because it is passed
+        // as a bound parameter, never interpolated into the SQL string.
+        $likePattern = '%"' . $idType . '_id":"' . $externalId . '"%';
 
         // Try JSON_EXTRACT first (MySQL 5.7+) for reliable extraction
         // This avoids LIKE's fragility with JSON strings
@@ -414,18 +415,19 @@ class TraktHistorySync
             return null;
         }
 
-        // Escape title for LIKE query
-        $escapedTitle = '%' . $this->db->real_escapeString($title) . '%';
+        // LIKE pattern; the raw title is safe because it is passed as a
+        // bound parameter, never interpolated into the SQL string.
+        $titlePattern = '%' . $title . '%';
 
         if ($year !== null) {
             $result = $this->db->query(
                 "SELECT id FROM media_items WHERE name LIKE ? AND metadata_json LIKE ? AND type = ? LIMIT 1",
-                [$escapedTitle, '%"year":"' . $year . '"%', $type]
+                [$titlePattern, '%"year":"' . $year . '"%', $type]
             );
         } else {
             $result = $this->db->query(
                 'SELECT id FROM media_items WHERE name LIKE ? AND type = ? LIMIT 1',
-                [$escapedTitle, $type]
+                [$titlePattern, $type]
             );
         }
 
