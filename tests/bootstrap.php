@@ -21,6 +21,13 @@ if (!class_exists(\Workerman\Http\Response::class)) {
 if (!class_exists(\Workerman\Http\Client::class)) {
     require_once __DIR__ . '/stubs/Workerman/Http/Client.php';
 }
+// Timer stub so the scrobble arms are recorded and their arguments asserted
+// instead of falling through to the plugin's synchronous branch (the blind spot
+// that let a persistent 0ms timer ship). One-shot arms run inline; persistent
+// arms are recorded only, never fired.
+if (!class_exists(\Workerman\Timer::class)) {
+    require_once __DIR__ . '/stubs/Workerman/Timer.php';
+}
 
 /**
  * Stub for host-supplied Phlix\Auth\WatchHistory class.

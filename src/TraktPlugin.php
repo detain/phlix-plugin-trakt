@@ -429,10 +429,10 @@ class TraktPlugin implements LifecycleInterface, ConfigurableInterface
         /** @var TraktApi $api */
         $api = $this->api;
 
-        // B5: Non-blocking async scrobble via Workerman\Timer::add(0, ...).
-        // Schedule on next event-loop tick so the worker returns to its loop
-        // immediately. Falls back to synchronous execution when Workerman\Timer
-        // is unavailable (e.g. CLI, unit tests outside a Workerman process).
+        // B5: Non-blocking async scrobble via a ONE-SHOT Workerman timer arm
+        // (see scheduleScrobbleTask()). Scheduled on the next event-loop tick so
+        // the worker returns to its loop immediately; runs synchronously when no
+        // Workerman timer environment is available (e.g. CLI, unit tests).
         $this->scheduleAsyncScrobbleStart($mediaItem, $progressPercent, $accessToken, $api);
     }
 
@@ -474,7 +474,8 @@ class TraktPlugin implements LifecycleInterface, ConfigurableInterface
         /** @var TraktApi $api */
         $api = $this->api;
 
-        // B5: Non-blocking async scrobble via Workerman\Timer::add(0, ...).
+        // B5: Non-blocking async scrobble via a ONE-SHOT Workerman timer arm
+        // (see scheduleScrobbleTask()).
         $this->scheduleAsyncScrobbleStop($mediaItem, $progressPercent, $accessToken, $api);
 
         // syncToTrakt is synchronous (DB writes + potential API call) but only
@@ -560,12 +561,55 @@ class TraktPlugin implements LifecycleInterface, ConfigurableInterface
     }
 
     /**
+     * B5: Arm a scrobble to run ONCE on the next event-loop tick.
+     *
+     * Workerman's `Timer::add(float $interval, callable $cb, ?array $args = [],
+     * bool $persistent = true)` REPEATS unless the 4th argument is `false`, and
+     * an interval of 0 is legal (`$interval < 0` is what throws). On the event
+     * loop a persistent 0 timer routes to `Select::repeat(0, ...)`, which
+     * re-inserts the task at `now + 0` on every tick. The scrobble schedulers
+     * originally passed only `(0, $cb)`, so every playback start/pause/resume/
+     * stop installed an IMMORTAL timer POSTing the same scrobble once per loop
+     * iteration: the select timeout collapses to 0 (worker pins a core and
+     * starves every other connection) while the captured MediaItem/token pair is
+     * replayed at loop rate against Trakt's /scrobble/* endpoints — a resident
+     * worker DoS plus the rate-limit/app-BAN posture this plugin exists to avoid.
+     *
+     * The house one-shot idiom is `Timer::add($seconds, $cb, [], false)`, which
+     * routes to the adapter's `delay()`: fires once, then is gone (same shape as
+     * phlix-server's `Application` / `CoreUpdateCheckWorker` boot-catchup arms).
+     *
+     * Outside a Workerman running environment `Timer::add()` THROWS a
+     * RuntimeException rather than no-opping (unit tests, CLI, and any process
+     * where the server vendor merely happens to be autoloadable), so the arm is
+     * guarded and the task runs inline on that path — which is what the previous
+     * `class_exists()` check claimed to do but could not deliver.
+     *
+     * @param callable $task The scrobble work to defer
+     *
+     * @return void
+     */
+    private function scheduleScrobbleTask(callable $task): void
+    {
+        if (class_exists(\Workerman\Timer::class)) {
+            try {
+                \Workerman\Timer::add(0, $task, [], false);
+
+                return;
+            } catch (\Throwable) {
+                // Not inside a Workerman worker — fall through and run inline.
+            }
+        }
+
+        $task();
+    }
+
+    /**
      * B5: Schedule an async scrobble-start call.
      *
-     * Uses Workerman\Timer::add(0, ...) to defer the blocking HTTP call to the
-     * next event-loop tick so the Workerman worker returns to its loop
-     * immediately. Falls back to synchronous execution when
-     * Workerman\Timer is unavailable (unit tests, CLI).
+     * Defers the blocking HTTP call to the next event-loop tick as a ONE-SHOT
+     * (see {@see self::scheduleScrobbleTask()}) so the Workerman worker returns
+     * to its loop immediately, running inline when no timer loop is available.
      *
      * @param MediaItem $mediaItem Media item being played
      * @param float $progressPercent Playback progress as a percentage (0-100)
@@ -580,14 +624,9 @@ class TraktPlugin implements LifecycleInterface, ConfigurableInterface
         string $accessToken,
         TraktApi $api
     ): void {
-        if (class_exists(\Workerman\Timer::class)) {
-            \Workerman\Timer::add(0, function () use ($mediaItem, $progressPercent, $accessToken, $api): void {
-                $this->executeScrobbleStart($mediaItem, $progressPercent, $accessToken, $api);
-            });
-        } else {
-            // Fallback: run synchronously (unit-test / CLI path)
+        $this->scheduleScrobbleTask(function () use ($mediaItem, $progressPercent, $accessToken, $api): void {
             $this->executeScrobbleStart($mediaItem, $progressPercent, $accessToken, $api);
-        }
+        });
     }
 
     /**
@@ -642,10 +681,9 @@ class TraktPlugin implements LifecycleInterface, ConfigurableInterface
     /**
      * B5: Schedule an async scrobble-stop call.
      *
-     * Uses Workerman\Timer::add(0, ...) to defer the blocking HTTP call to the
-     * next event-loop tick so the Workerman worker returns to its loop
-     * immediately. Falls back to synchronous execution when
-     * Workerman\Timer is unavailable (unit tests, CLI).
+     * Defers the blocking HTTP call to the next event-loop tick as a ONE-SHOT
+     * (see {@see self::scheduleScrobbleTask()}) so the Workerman worker returns
+     * to its loop immediately, running inline when no timer loop is available.
      *
      * @param MediaItem $mediaItem Media item that was played
      * @param float $progressPercent Final playback progress as a percentage (0-100)
@@ -660,14 +698,9 @@ class TraktPlugin implements LifecycleInterface, ConfigurableInterface
         string $accessToken,
         TraktApi $api
     ): void {
-        if (class_exists(\Workerman\Timer::class)) {
-            \Workerman\Timer::add(0, function () use ($mediaItem, $progressPercent, $accessToken, $api): void {
-                $this->executeScrobbleStop($mediaItem, $progressPercent, $accessToken, $api);
-            });
-        } else {
-            // Fallback: run synchronously (unit-test / CLI path)
+        $this->scheduleScrobbleTask(function () use ($mediaItem, $progressPercent, $accessToken, $api): void {
             $this->executeScrobbleStop($mediaItem, $progressPercent, $accessToken, $api);
-        }
+        });
     }
 
     /**
@@ -722,10 +755,9 @@ class TraktPlugin implements LifecycleInterface, ConfigurableInterface
     /**
      * B6: Schedule an async scrobble-pause call.
      *
-     * Uses Workerman\Timer::add(0, ...) to defer the blocking HTTP call to the
-     * next event-loop tick so the Workerman worker returns to its loop
-     * immediately. Falls back to synchronous execution when
-     * Workerman\Timer is unavailable (unit tests, CLI).
+     * Defers the blocking HTTP call to the next event-loop tick as a ONE-SHOT
+     * (see {@see self::scheduleScrobbleTask()}) so the Workerman worker returns
+     * to its loop immediately, running inline when no timer loop is available.
      *
      * @param MediaItem $mediaItem Media item that was playing
      * @param float $progressPercent Playback progress as a percentage (0-100)
@@ -740,14 +772,9 @@ class TraktPlugin implements LifecycleInterface, ConfigurableInterface
         string $accessToken,
         TraktApi $api
     ): void {
-        if (class_exists(\Workerman\Timer::class)) {
-            \Workerman\Timer::add(0, function () use ($mediaItem, $progressPercent, $accessToken, $api): void {
-                $this->executeScrobblePause($mediaItem, $progressPercent, $accessToken, $api);
-            });
-        } else {
-            // Fallback: run synchronously (unit-test / CLI path)
+        $this->scheduleScrobbleTask(function () use ($mediaItem, $progressPercent, $accessToken, $api): void {
             $this->executeScrobblePause($mediaItem, $progressPercent, $accessToken, $api);
-        }
+        });
     }
 
     /**
