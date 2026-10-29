@@ -197,8 +197,14 @@ final class TraktScrobbleTimerOneShotTest extends TestCase
     /**
      * Wire an enabled, configured plugin whose media items resolve, with no
      * network I/O (same harness shape as TraktPluginTest).
+     *
+     * Production order: the host's PluginLoader delivers settings via
+     * `configure()` BEFORE `onEnable()` (PluginLoader.php applyPersistedSettings
+     * → onEnable), and `schedulePeriodicSync()` reads the master `enabled`
+     * switch at arm time — an earlier onEnable-first wiring would arm the pull
+     * against a flag the host has not delivered yet.
      */
-    private function wiredPlugin(FakeTraktApi $api): TraktPlugin
+    private function wiredPlugin(FakeTraktApi $api, bool $masterOn = true): TraktPlugin
     {
         $settings = new TraktSettings(
             accessToken: 'fresh-access',
@@ -208,14 +214,40 @@ final class TraktScrobbleTimerOneShotTest extends TestCase
         );
 
         $plugin = new TraktPlugin($settings, new NullLogger(), $api);
+        $plugin->configure(array_merge($settings->toArray(), ['enabled' => $masterOn]));
 
         $container = new StubContainer([
             \Phlix\Media\Library\ItemRepository::class => new FakeItemRepository(),
             \Phlix\Auth\WatchHistory::class => null,
         ]);
         $plugin->onEnable($container);
-        $plugin->configure(array_merge($settings->toArray(), ['enabled' => true]));
 
         return $plugin;
+    }
+
+    /**
+     * MASTER SWITCH (review trakt__docmaint M1): with the plugin's `enabled`
+     * master off at boot, `onEnable()` must NOT arm the recurring
+     * Trakt→Phlix pull timer at all. The host boots a plugin from its own
+     * enabled column and never consults the plugin's `enabled` SETTING, so
+     * without this arm-time gate a "master off" install still kept a live
+     * recurring timer inside the resident worker.
+     *
+     * Mutation-proven: dropping `!$this->enabled` from
+     * schedulePeriodicSync()'s guard reddens this test.
+     */
+    public function testMasterSwitchOffAtBootArmsNoRecurringPullTimer(): void
+    {
+        $api = new FakeTraktApi();
+        $plugin = $this->wiredPlugin($api, masterOn: false);
+
+        $recurring = array_values(array_filter(Timer::$arms, static fn(array $arm): bool => $arm['persistent']));
+        $this->assertCount(
+            0,
+            $recurring,
+            'a master-off boot must arm no recurring pull timer (one-shots aside)'
+        );
+        $this->assertSame([], Timer::$arms, 'with the master off, onEnable must arm nothing');
+        $this->assertSame(0, $api->scrobbleStartCalls);
     }
 }

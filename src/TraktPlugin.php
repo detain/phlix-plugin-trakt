@@ -25,7 +25,8 @@ use Workerman\MySQL\Connection;
  * PlaybackStopped events and submits scrobble data to Trakt.tv using the
  * 3-state scrobble protocol (start/pause/stop; resume re-sends "start").
  *
- * Also handles two-way watch history sync:
+ * Also handles two-way watch history sync (both directions honour the
+ * master `enabled` switch — with it off nothing scrobbles and nothing pulls):
  * - Phlix → Trakt: On PlaybackStopped with ≥ 90% completion
  * - Trakt → Phlix: On scheduled sync (via TraktHistorySync)
  *
@@ -1398,7 +1399,15 @@ class TraktPlugin implements LifecycleInterface, ConfigurableInterface
      *
      * Uses Workerman\Timer::add() to run the sync every
      * {@see self::syncIntervalSeconds()}. Gracefully no-ops when
-     * Workerman\Timer is unavailable (unit tests, CLI) or when sync is disabled.
+     * Workerman\Timer is unavailable (unit tests, CLI), when the plugin's
+     * master `enabled` switch is off, or when two-way sync is disabled.
+     *
+     * The master switch must be honoured HERE at arm time and again per tick
+     * ({@see self::runScheduledSync()}): the host boots this plugin from its
+     * own plugin-registry enabled column and never consults the plugin's
+     * `enabled` SETTING, so the plugin is the sole enforcer of what
+     * plugin.json/README document as the "Master on/off for Trakt scrobbling
+     * and sync". A master-off boot arms nothing.
      *
      * @param ContainerInterface $container Host PSR-11 container
      *
@@ -1406,7 +1415,7 @@ class TraktPlugin implements LifecycleInterface, ConfigurableInterface
      */
     private function schedulePeriodicSync(ContainerInterface $container): void
     {
-        if (!$this->settings->isConfigured() || !$this->settings->syncEnabled) {
+        if (!$this->enabled || !$this->settings->isConfigured() || !$this->settings->syncEnabled) {
             return;
         }
 
@@ -1422,14 +1431,24 @@ class TraktPlugin implements LifecycleInterface, ConfigurableInterface
     /**
      * B8: Execute the periodic Trakt→Phlix sync.
      *
-     * Called by the Workerman timer on each tick. Catches all exceptions so a
-     * failed sync does not crash the worker.
+     * Called by the Workerman timer on each tick. Re-checks the master
+     * `enabled` switch and the per-feature gates per decision (same law as
+     * the scrobble handlers and {@see self::syncHistoryFromTrakt()}), so
+     * turning the master off stops every subsequent tick even when the timer
+     * was armed while it was on. Catches all exceptions so a failed sync
+     * does not crash the worker.
      *
      * @return void
      */
     private function runScheduledSync(): void
     {
         if ($this->watchHistory === null || $this->api === null || $this->db === null) {
+            return;
+        }
+
+        if (!$this->enabled) {
+            $this->logger?->debug('Trakt: master switch disabled, skipping scheduled sync');
+
             return;
         }
 

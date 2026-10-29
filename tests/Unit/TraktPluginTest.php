@@ -266,6 +266,10 @@ final class TraktPluginTest extends TestCase
         );
 
         $plugin = new TraktPlugin($settings, new NullLogger(), $api);
+        // Master switch ON: the missing credentials must be the sole reason the
+        // tick skips (the gate below would also honour `enabled` — a false
+        // master here would confound the cause this test pins).
+        $plugin->configure(array_merge($settings->toArray(), ['enabled' => true]));
 
         // Use reflection to set internal collaborators for this test
         $ref = new \ReflectionClass($plugin);
@@ -303,6 +307,8 @@ final class TraktPluginTest extends TestCase
         );
 
         $plugin = new TraktPlugin($settings, new NullLogger(), $api);
+        // Master switch ON: `sync_enabled = false` must be the sole blocker.
+        $plugin->configure(array_merge($settings->toArray(), ['enabled' => true]));
 
         // Use reflection to set internal collaborators
         $ref = new \ReflectionClass($plugin);
@@ -346,6 +352,9 @@ final class TraktPluginTest extends TestCase
         $seam->returnValue = 5;
 
         $plugin = new SeamTraktPlugin($settings, new NullLogger(), $api, new RecordingSettingsRepository());
+        // Production wiring order: the host delivers settings via configure()
+        // (master ON here) before onEnable()/ticks ever run.
+        $plugin->configure(array_merge($settings->toArray(), ['enabled' => true]));
         $plugin->historySyncSeam = $seam;
 
         $ref = new \ReflectionClass($plugin);
@@ -362,6 +371,55 @@ final class TraktPluginTest extends TestCase
         $method->invoke($plugin);
 
         $this->assertSame('default', $seam->lastProfileId);
+    }
+
+    /**
+     * MASTER SWITCH (review trakt__docmaint M1): a tick with the plugin's
+     * `enabled` master off must NOT pull Trakt history, no matter how the
+     * per-feature `sync_enabled` toggle and credentials read. README:40 and
+     * plugin.json sell `enabled` as "Master on/off for Trakt scrobbling and
+     * sync"; the scheduled pull used to ignore it and kept reconciling
+     * WatchHistory every tick with the switch off.
+     *
+     * Mutation-proven: reverting the `!$this->enabled` guard in
+     * runScheduledSync() reddens this test (the seam records 'default').
+     */
+    public function testRunScheduledSyncSkipsPullWhenMasterSwitchOff(): void
+    {
+        $api = new FakeTraktApi();
+        $settings = new TraktSettings(
+            accessToken: 'a',
+            refreshToken: 'r',
+            username: 'testuser',
+            syncEnabled: true, // per-feature sync ON — only the master blocks
+        );
+
+        $seam = new RecordingHistorySync(
+            $api,
+            new \Phlix\Auth\WatchHistory(),
+            $settings,
+            new \Workerman\MySQL\TestableConnection(),
+            new NullLogger(),
+        );
+
+        $plugin = new SeamTraktPlugin($settings, new NullLogger(), $api, new RecordingSettingsRepository());
+        $plugin->configure(array_merge($settings->toArray(), ['enabled' => false]));
+        $plugin->historySyncSeam = $seam;
+
+        $ref = new \ReflectionClass($plugin);
+        $watchHistProp = $ref->getParentClass()->getProperty('watchHistory');
+        $watchHistProp->setAccessible(true);
+        $watchHistProp->setValue($plugin, new \Phlix\Auth\WatchHistory());
+
+        $dbProp = $ref->getParentClass()->getProperty('db');
+        $dbProp->setAccessible(true);
+        $dbProp->setValue($plugin, new \Workerman\MySQL\TestableConnection());
+
+        $method = $ref->getMethod('runScheduledSync');
+        $method->setAccessible(true);
+        $method->invoke($plugin);
+
+        $this->assertSame('', $seam->lastProfileId, 'a tick with the master switch off must never reach the pull');
     }
 
     // --- B2: token-refresh wiring + persistence -----------------------------
