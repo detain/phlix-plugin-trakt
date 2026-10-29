@@ -275,7 +275,16 @@ final class TraktHistorySyncTest extends TestCase
         $this->assertSame(0, $sync->syncRatingsTraktToPhlix('default'));
     }
 
-    public function testSyncRatingsTraktToPhlixFetchesAndUpdatesRatings(): void
+    /**
+     * C06 law (review trakt__srphp row 42): pulled ratings persist through the
+     * canonical user_item_data.rating seam and never touch watch_history.
+     *
+     * The pre-fix version of this test asserted exactly(2) updateProgress
+     * calls — it encoded the defect: the rating was dropped on the floor
+     * (non-existent 6th argument) while the 0/0/completed upsert zeroed the
+     * user's resume position, duration and progress.
+     */
+    public function testSyncRatingsTraktToPhlixFetchesAndPersistsRatings(): void
     {
         $ratings = [
             ['movie' => ['ids' => ['tmdb' => 123], 'title' => 'Movie 1', 'year' => 2024], 'rating' => 8, 'rated_at' => '2024-01-01T00:00:00Z'],
@@ -286,13 +295,20 @@ final class TraktHistorySyncTest extends TestCase
         $api->method('getRatings')->willReturn($ratings);
 
         $db = new TraktHistorySyncTestDbDouble();
-        $db->setResults([[['id' => 'local-id-1']], [['id' => 'local-id-2']]]);
+        $db->setResults([
+            [['id' => 'local-id-1']],       // external-id lookup, entry 1
+            [['user_id' => 'user-1']],     // profile-owner resolution, entry 1
+            [],                             // rating upsert, entry 1
+            [['id' => 'local-id-2']],      // external-id lookup, entry 2
+            [['user_id' => 'user-2']],     // profile-owner resolution, entry 2
+            [],                             // rating upsert, entry 2
+        ]);
 
         $watchHistory = $this->getMockBuilder(WatchHistory::class)
             ->onlyMethods(['updateProgress', 'getForMediaItem'])
             ->getMock();
 
-        $watchHistory->expects($this->exactly(2))->method('updateProgress');
+        $watchHistory->expects($this->never())->method('updateProgress');
 
         $settings = new TraktSettings(
             accessToken: 'a',
@@ -309,9 +325,16 @@ final class TraktHistorySyncTest extends TestCase
             new NullLogger()
         );
 
-        $result = $sync->syncRatingsTraktToPhlix('default');
+        $result = $sync->syncRatingsTraktToPhlix('profile-1');
 
         $this->assertSame(2, $result);
+
+        $calls = $db->getCalls();
+        $this->assertCount(6, $calls);
+        $this->assertStringContainsString('INSERT INTO user_item_data', $calls[2]['sql']);
+        $this->assertSame(['user-1', 'profile-1', 'local-id-1', 8], $calls[2]['params']);
+        $this->assertStringContainsString('INSERT INTO user_item_data', $calls[5]['sql']);
+        $this->assertSame(['user-2', 'profile-1', 'local-id-2', 9], $calls[5]['params']);
     }
 
     public function testSyncRatingsPhlixToTraktReturnsFalseWhenNotConfigured(): void

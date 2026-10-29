@@ -35,6 +35,7 @@ if (!class_exists(\Phlix\Auth\WatchHistory::class)) {
     class WatchHistoryStub
     {
         public const COMPLETED_THRESHOLD = 90.0;
+        public const STATUS_PLAYING = 'playing';
         public const STATUS_COMPLETED = 'completed';
         public const STATUS_IN_PROGRESS = 'in_progress';
         public const TICKS_PER_SECOND = 10_000_000;
@@ -44,13 +45,21 @@ if (!class_exists(\Phlix\Auth\WatchHistory::class)) {
             return null;
         }
 
+        /**
+         * Mirrors the host signature (phlix-server src/Auth/WatchHistory.php):
+         * five parameters, nullable duration, array return. The pre-C06 stub
+         * fabricated a fourth arg `int $durationTicks` (non-nullable, no
+         * default) and `void`, which let a non-existent 6th-argument call
+         * compile and pass every mock-based test (review trakt__srphp C2).
+         */
         public function updateProgress(
             string $profileId,
             string $mediaItemId,
             int $positionTicks,
-            int $durationTicks,
-            string $status
-        ): void {
+            ?int $durationTicks = null,
+            string $status = self::STATUS_PLAYING
+        ): array {
+            return [];
         }
     }
 

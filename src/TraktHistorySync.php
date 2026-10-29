@@ -172,6 +172,21 @@ class TraktHistorySync
             $watchedAt = $this->parseWatchedAt($itemMap);
             $durationTicks = $this->extractDurationTicks($itemMap);
 
+            if ($durationTicks <= 0) {
+                // Trakt supplied no runtime for this entry. Writing 0/0 into
+                // updateProgress has no "leave unchanged" encoding (0 is not
+                // null), so it would zero an existing row's position,
+                // duration and progress while marking it completed — the
+                // same destructive class as the rating-pull defect (review
+                // trakt__srphp C2). Preserving local state is the only
+                // non-destructive option.
+                $this->logger->warning(
+                    'TraktHistorySync: no runtime in Trakt entry; skipping write to preserve local progress',
+                    ['media_item_id' => $mediaItemId]
+                );
+                continue;
+            }
+
             $this->watchHistory->updateProgress(
                 $profileId,
                 $mediaItemId,
@@ -523,12 +538,14 @@ class TraktHistorySync
     /**
      * Sync ratings from Trakt → Phlix.
      *
-     * Pulls ratings from Trakt and updates local user ratings for matched items.
+     * Pulls ratings from Trakt and persists them to the canonical
+     * user_item_data.rating column for matched items.
      * Uses the same robust ID matching as history sync, with title/year fallback.
      *
      * @param string $profileId Profile ID to sync ratings for
      *
-     * @return int Number of ratings updated
+     * @return int Number of ratings persisted (entries whose profile owner
+     *             cannot be resolved are skipped and not counted)
      *
      * @since 0.14.0
      */
@@ -573,14 +590,18 @@ class TraktHistorySync
                 continue;
             }
 
-            // Update local rating via watch history
-            $this->updateLocalRating($profileId, $mediaItemId, $ratingValue);
-            $updated++;
+            // Persist through the canonical user_item_data.rating seam;
+            // only writes that actually landed are counted (pre-fix the
+            // counter incremented on a call that discarded the rating and
+            // zeroed the watch_history row instead).
+            if ($this->updateLocalRating($profileId, $mediaItemId, $ratingValue)) {
+                $updated++;
 
-            $this->logger->debug('TraktHistorySync: synced rating from Trakt', [
-                'media_item_id' => $mediaItemId,
-                'rating' => $ratingValue,
-            ]);
+                $this->logger->debug('TraktHistorySync: synced rating from Trakt', [
+                    'media_item_id' => $mediaItemId,
+                    'rating' => $ratingValue,
+                ]);
+            }
         }
 
         $this->logger->info('TraktHistorySync: completed ratings Trakt→Phlix sync', [
@@ -665,26 +686,73 @@ class TraktHistorySync
     }
 
     /**
-     * Update local rating for a media item.
+     * Persist a pulled Trakt rating into the host's canonical rating column.
      *
-     * @param string $profileId Profile ID
+     * Ratings live in `user_item_data.rating` (INT NULL, inclusive 1-10) and
+     * are keyed by the (user_id, profile_id, item_id) primary key widened by
+     * the server's migration 100. watch_history has no rating column: the
+     * pre-fix code called WatchHistory::updateProgress() with a non-existent
+     * sixth argument (the host method takes five, so the rating was silently
+     * dropped) while position=0/duration=0/completed zeroed the user's
+     * resume position, duration and progress on every sync — user data loss
+     * for every rated item (review trakt__srphp row 42, C2).
+     *
+     * The write mirrors the host's UserItemDataRepository::setRating()
+     * statement exactly: its ON DUPLICATE arm touches ONLY the rating
+     * column, so an existing row's favorite / like_level / watched
+     * companions survive. The rating path never writes watch_history.
+     *
+     * @param string $profileId Profile ID the sync runs for
      * @param string $mediaItemId Local media item ID
      * @param int $rating Rating value (1-10)
      *
-     * @return void
+     * @return bool True when the rating was persisted.
      */
-    private function updateLocalRating(string $profileId, string $mediaItemId, int $rating): void
+    private function updateLocalRating(string $profileId, string $mediaItemId, int $rating): bool
     {
-        // Rating is stored in watch_history as user_rating field
-        // This uses the same updateProgress mechanism but sets the rating
-        $this->watchHistory->updateProgress(
-            $profileId,
-            $mediaItemId,
-            0, // position
-            0, // duration
-            WatchHistory::STATUS_COMPLETED,
-            $rating
+        $userId = $this->findUserIdForProfile($profileId);
+        if ($userId === null) {
+            // Without a real owning account there is nothing honest to
+            // write: inventing an identity corrupts user data, and the old
+            // watch_history rewrite corrupted it differently. Skip loudly
+            // and let the caller withhold the count.
+            $this->logger->warning('TraktHistorySync: no user owns the sync profile; rating not persisted', [
+                'profile_id' => $profileId,
+                'media_item_id' => $mediaItemId,
+            ]);
+
+            return false;
+        }
+
+        $this->db->query(
+            'INSERT INTO user_item_data (user_id, profile_id, item_id, rating)
+             VALUES (?, ?, ?, ?)
+             ON DUPLICATE KEY UPDATE rating = VALUES(rating)',
+            [$userId, $profileId, $mediaItemId, $rating]
         );
+
+        return true;
+    }
+
+    /**
+     * Resolve the account that owns a profile.
+     *
+     * @param string $profileId Profile UUID.
+     *
+     * @return string|null Owning user UUID, or null when no user_profiles
+     *                      row matches the profile.
+     */
+    private function findUserIdForProfile(string $profileId): ?string
+    {
+        $result = $this->db->query(
+            'SELECT user_id FROM user_profiles WHERE id = ? LIMIT 1',
+            [$profileId]
+        );
+
+        $row = is_array($result) ? ($result[0] ?? null) : null;
+        $userId = is_array($row) ? ($row['user_id'] ?? null) : null;
+
+        return is_string($userId) && $userId !== '' ? $userId : null;
     }
 
     /**
