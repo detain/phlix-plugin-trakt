@@ -1496,21 +1496,45 @@ class TraktPlugin implements LifecycleInterface, ConfigurableInterface
     }
 
     /**
-     * Load Trakt plugin configuration.
+     * Load the operator's Trakt file/env configuration.
+     *
+     * The include and its normalization run through the shared
+     * {@see TraktOperatorConfig::load()} with an explicit null settings
+     * repository — the same no-overlay call shape the host uses for its
+     * deliberate config/env-only read (its Application wiring resolves the
+     * token-encryption key without server_settings). This keeps the plugin's
+     * config read on the single normalizing source, so the include semantics
+     * cannot drift from the shared class again.
+     *
+     * The admin-settings overlay is NOT applied here: the plugin context
+     * holds no Phlix\Admin\SettingsRepository handle (its own
+     * {@see TraktSettingsRepository} persists the per-plugin
+     * plugins.settings_json store — a different tier), so admin-saved
+     * credentials reach the host's OAuth path only. Closing that remaining
+     * plugin/host split is the consolidation port's job (this package is
+     * the superset the host will run once its embedded copy is deleted),
+     * not something to change silently here — applying the overlay would
+     * alter credential resolution and needs its own deliberate lane.
+     *
+     * Path law (verbatim current behavior, deliberately unchanged):
+     * dirname(__DIR__, 5) . '/config/scrobblers/trakt.php'. In a vendored
+     * install (<srv>/vendor/detain/phlix-plugin-trakt/src) that resolves
+     * ABOVE the server root, so the file tier typically never loads and
+     * this method returns []. The host's own controller documents the same
+     * off-by-one class of bug (TraktOAuthController::configPath()); any
+     * future depth correction changes credential resolution and must be
+     * driven as a behavior change, not a drive-by.
+     *
+     * @param string|null $configFile Test seam; null keeps the production
+     *                                default path above.
      *
      * @return array<string, mixed>
      */
-    private function loadConfig(): array
+    private function loadConfig(?string $configFile = null): array
     {
-        $configFile = dirname(__DIR__, 5) . '/config/scrobblers/trakt.php';
-
-        if (is_file($configFile)) {
-            /** @var array<string, mixed> $config */
-            $config = include $configFile;
-
-            return $config;
-        }
-
-        return [];
+        return TraktOperatorConfig::load(
+            $configFile ?? dirname(__DIR__, 5) . '/config/scrobblers/trakt.php',
+            null
+        );
     }
 }

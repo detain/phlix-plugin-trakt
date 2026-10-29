@@ -19,7 +19,8 @@ use Phlix\Admin\SettingsRepository;
  *
  * ## Why this class exists
  *
- * The credentials were loaded in TWO places that disagreed:
+ * The credentials were loaded in TWO places that disagreed (in the host
+ * repo, where this class was first written):
  *
  * | site | behaviour before |
  * |---|---|
@@ -35,7 +36,27 @@ use Phlix\Admin\SettingsRepository;
  * which point `isConfigured()` is false and every tick is a no-op. No error is
  * logged on that path, so it presents as "Trakt connected but nothing syncs".
  *
- * Both callers now route through here so the two paths cannot drift again.
+ * ## Where each copy is consumed
+ *
+ * The cure above was applied to the HOST's copy of this class
+ * (`Phlix\Server\Integrations\Trakt\TraktOperatorConfig`), and it is that
+ * copy whose two live callers route through it: the OAuth controller reads
+ * with the admin overlay applied, and the host's token-key wiring reads
+ * with an explicit `null` (config/env tier by design). This repo's copy was
+ * vendored in by the consolidation port — byte-identical apart from the
+ * namespace — so the catalog plugin is the complete superset the host can
+ * run once its embedded copy is deleted.
+ *
+ * In THIS repo the sole production caller is {@see TraktPlugin::loadConfig()},
+ * routed through {@see self::load()} with a null settings handle: the shared
+ * include/normalization, no overlay (the plugin holds no
+ * `Phlix\Admin\SettingsRepository`; its {@see TraktSettingsRepository} is a
+ * different store — the per-plugin `plugins.settings_json` tier).
+ * `tests/Unit/TraktLoadConfigRoutingTest.php` pins that the plugin read and
+ * this class resolve the same shape and cannot drift. The split-brain story
+ * above remains TRUE of the plugin path across the plugin/host boundary
+ * until consolidation lands: the host's own controller still describes the
+ * plugin as reading "the same config file with NO overlay at all".
  *
  * ## Precedence
  *
