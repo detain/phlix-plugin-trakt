@@ -64,6 +64,27 @@ php bin/phlix plugin:install https://github.com/detain/phlix-plugin-trakt
 > documents that layer, and its `token_encryption_key` is what the plugin
 > uses to encrypt OAuth tokens at rest.
 
+## Rate Limits and Scheduling
+
+Trakt throttles by request rate and answers HTTP 429 with a
+`Retry-After` hint. The plugin parses it and surfaces it as
+`TraktRateLimitException::$retryAfter`, but **deliberately does not
+auto-retry** (review trakt__secaudit #6 / trakt__srphp m11): a scrobble
+that hits 429 is logged and dropped, and the next history pull simply
+waits for its regular tick — a blind deferred retry against a sustained
+rate limiter would queue load instead of relieving it. For the same
+reason the `X-Ratelimit-*` headers on successful (2xx) responses are not
+carried: nothing in the plugin budgets against them today, so surfacing
+them would be theater. `retryAfter` stays on the typed exception as an
+informational value for hosts that choose to consume it.
+
+History pulling also has **two independent schedulers**: the plugin's own
+periodic timer (armed from `sync_interval_minutes` on enable) and the
+host server's scheduled watch-history sweep. Nothing inside this plugin
+coordinates the two, so a linked account can see pulls on both cadences;
+deduplication is a host-layer responsibility, not something this
+repository can promise.
+
 ## Development
 
 ```bash

@@ -1512,6 +1512,12 @@ class TraktPlugin implements LifecycleInterface, ConfigurableInterface
      * plugin.json/README document as the "Master on/off for Trakt scrobbling
      * and sync". A master-off boot arms nothing.
      *
+     * Host-interaction note (M-TRAKT-13): this timer runs INDEPENDENTLY of
+     * the host server's own watch-history sweep. Nothing in this plugin
+     * coordinates the two schedules, so a linked account may pull at both
+     * cadences; deduplication belongs to the host layer. README "Rate Limits
+     * and Scheduling" states the same law where operators will read it.
+     *
      * @param ContainerInterface $container Host PSR-11 container
      *
      * @return void

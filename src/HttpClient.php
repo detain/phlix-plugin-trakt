@@ -324,6 +324,9 @@ class HttpClient implements HttpClientInterface
             $decoded = is_array($decoded) ? $decoded : [];
             $message = is_string($decoded['error'] ?? null) ? $decoded['error']
                 : (is_string($decoded['message'] ?? null) ? $decoded['message'] : 'Rate limit exceeded');
+            // The hint is surfaced for hosts; the plugin itself has no
+            // auto-retry consumer — deliberate law, see README "Rate Limits
+            // and Scheduling" (M-TRAKT-13/19).
             throw new TraktRateLimitException($message, self::extractRetryAfter($headers));
         }
 
