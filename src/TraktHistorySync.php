@@ -416,9 +416,13 @@ class TraktHistorySync
      */
     private function findMediaItemIdByExternalId(string $idType, string $externalId): ?string
     {
-        // LIKE fallback pattern; the raw value is safe because it is passed
-        // as a bound parameter, never interpolated into the SQL string.
-        $likePattern = '%"' . $idType . '_id":"' . $externalId . '"%';
+        // LIKE fallback pattern: the remote-supplied id has its LIKE
+        // metacharacters neutralised (MySQL's default LIKE escape character is
+        // the backslash), so a payload value containing % or _ can only match
+        // literally. The structural underscore before `id` is escaped too —
+        // the stored JSON key holds a literal underscore. Values still travel
+        // as bound parameters, never interpolated into the SQL string.
+        $likePattern = '%"' . $idType . '\\_id":"' . self::escapeLikeWildcards($externalId) . '"%';
 
         // Try JSON_EXTRACT first (MySQL 5.7+) for reliable extraction
         // This avoids LIKE's fragility with JSON strings
@@ -462,9 +466,12 @@ class TraktHistorySync
             return null;
         }
 
-        // LIKE pattern; the raw title is safe because it is passed as a
+        // The LIKE pattern neutralises metacharacters in the REMOTE-supplied
+        // title (Trakt payload): MySQL's LIKE honours % and _ inside patterns,
+        // so an unescaped wildcard in a title would broaden the fuzzy lookup
+        // and could bind the wrong local item. The value still travels as a
         // bound parameter, never interpolated into the SQL string.
-        $titlePattern = '%' . $title . '%';
+        $titlePattern = '%' . self::escapeLikeWildcards($title) . '%';
 
         if ($year !== null) {
             $result = $this->db->query(
@@ -489,6 +496,26 @@ class TraktHistorySync
         }
 
         return $mediaItemId;
+    }
+
+    /**
+     * Neutralise MySQL LIKE metacharacters in a literal value.
+     *
+     * `%` (any run) and `_` (any single char) are wildcards inside a LIKE
+     * pattern; MySQL's default LIKE escape character is the backslash. Values
+     * that reach a LIKE pattern from a remote payload must have these escaped
+     * or a hostile provider can widen a fuzzy match. Backslashes are doubled
+     * first so pre-existing ones keep their literal meaning.
+     *
+     * @param string $value Raw remote-supplied literal
+     *
+     * @return string LIKE-safe literal (still bound as a parameter)
+     *
+     * @since 1.5.0
+     */
+    private static function escapeLikeWildcards(string $value): string
+    {
+        return str_replace(['\\', '%', '_'], ['\\\\', '\\%', '\\_'], $value);
     }
 
     /**
