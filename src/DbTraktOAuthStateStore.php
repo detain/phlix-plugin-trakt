@@ -130,7 +130,8 @@ final class DbTraktOAuthStateStore implements TraktOAuthStateStore
         $this->db->beginTrans();
         try {
             $result = $this->db->query(
-                "SELECT data FROM oauth_state_store WHERE provider = ? AND state_value = ? AND expires_at > NOW() FOR UPDATE",
+                "SELECT data FROM oauth_state_store WHERE provider = ? AND state_value = ?"
+                . " AND expires_at > NOW() FOR UPDATE",
                 [self::PROVIDER, $state]
             );
 
