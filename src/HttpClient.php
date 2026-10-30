@@ -121,7 +121,34 @@ class HttpClient implements HttpClientInterface
      */
     private function requestAsync(string $method, string $url, array $data, array $headers): array
     {
-        $client = new \Workerman\Http\Client(['timeout' => $this->timeout]);
+        // M-TRAKT-11 (secaudit #4): mirror the cURL transport's TLS pinning on
+        // the async path. The vendored workerman/http-client pool opens TLS
+        // UNVERIFIED by default (ConnectionPool::create ships
+        // verify_peer=false / verify_peer_name=false / allow_self_signed=true
+        // and its shallow array_merge REPLACES the whole 'ssl' section), so an
+        // explicit strict context must ride the client options — including
+        // peer_name, which the pool only auto-derives on its own defaults path
+        // that our replacement clobbers. The cURL pins (CURLOPT_SSL_VERIFYPEER,
+        // CURLOPT_SSL_VERIFYHOST=2, HTTPS-only CURLOPT_PROTOCOLS) are the
+        // reference; the scheme guard below mirrors its HTTPS-only law.
+        $scheme = parse_url($url, PHP_URL_SCHEME);
+        $host = parse_url($url, PHP_URL_HOST);
+        if ($scheme !== 'https' || !is_string($host) || $host === '') {
+            throw new TraktApiException('Refusing non-HTTPS async request to ' . $url);
+        }
+
+        $client = new \Workerman\Http\Client([
+            'timeout' => $this->timeout,
+            'context' => [
+                'ssl' => [
+                    'verify_peer' => true,
+                    'verify_peer_name' => true,
+                    'allow_self_signed' => false,
+                    'SNI_enabled' => true,
+                    'peer_name' => $host,
+                ],
+            ],
+        ]);
 
         $state = ['done' => false, 'response' => null, 'error' => null];
 

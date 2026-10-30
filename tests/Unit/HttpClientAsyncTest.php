@@ -69,6 +69,48 @@ final class HttpClientAsyncTest extends TestCase
         $this->assertSame('GET', Client::$lastRequest['options']['method']);
     }
 
+    /**
+     * M-TRAKT-11 (secaudit #4): the async transport carried Bearer +
+     * client_secret over a TLS context that the vendored workerman/http-client
+     * pool defaults to verify_peer=false / allow_self_signed=true, while the
+     * cURL fallback pinned CURLOPT_SSL_VERIFYPEER + VERIFYHOST=2 + HTTPS-only
+     * protocols. Both transports must now enforce verification: requestAsync()
+     * passes an explicit strict ssl context (hub 519c0c0 idiom) plus the SNI
+     * peer_name taken from the request URL.
+     */
+    public function testAsyncClientIsConstructedWithStrictTlsContext(): void
+    {
+        Client::$responses['https://api.trakt.tv/users/me'] = [
+            'status' => 200,
+            'headers' => [],
+            'body' => '{"ok":true}',
+        ];
+
+        (new HttpClient(timeout: 1))->get('https://api.trakt.tv/users/me');
+
+        $this->assertNotNull(Client::$lastConfig, 'the async transport must have been used');
+        $ssl = Client::$lastConfig['context']['ssl'] ?? null;
+        $this->assertIsArray($ssl, 'requestAsync must pass an explicit stream context');
+        $this->assertTrue($ssl['verify_peer'], 'peer certificates must be verified (no trust-on-first-use)');
+        $this->assertTrue($ssl['verify_peer_name'], 'the certificate hostname must be verified');
+        $this->assertFalse($ssl['allow_self_signed'], 'self-signed CAs must be rejected (cURL path rejects them too)');
+        $this->assertTrue($ssl['SNI_enabled'], 'SNI must be sent');
+        $this->assertSame('api.trakt.tv', $ssl['peer_name'], 'peer_name must pin the SNI/verification hostname');
+    }
+
+    /**
+     * M-TRAKT-11: the async path must mirror the cURL HTTPS-only protocol pin
+     * (CURLOPT_PROTOCOLS) — a non-https URL is a hard error, never cleartext
+     * transit of the bearer token.
+     */
+    public function testAsyncTransportRefusesNonHttpsUrls(): void
+    {
+        $this->expectException(TraktApiException::class);
+        $this->expectExceptionMessageMatches('/HTTPS/');
+
+        (new HttpClient(timeout: 1))->get('http://api.trakt.tv/users/me');
+    }
+
     public function testAsyncGetSuccessDecodesJsonBody(): void
     {
         Client::$responses['https://api.trakt.tv/movies/1'] = [

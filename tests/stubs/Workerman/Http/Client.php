@@ -50,6 +50,24 @@ class Client
     public static bool $neverRespond = false;
 
     /**
+     * The constructor config of the most recently built client — the surface
+     * the production code pins its strict TLS context onto (the vendored
+     * workerman/http-client pool defaults to verify_peer=false, so the ctx
+     * rides the per-instance options).
+     *
+     * @var array<string, mixed>|null
+     */
+    public static ?array $lastConfig = null;
+
+    /**
+     * @param array<string, mixed> $config Client config (timeout, context, ...)
+     */
+    public function __construct(array $config = [])
+    {
+        self::$lastConfig = $config;
+    }
+
+    /**
      * @param string $url Request URL
      * @param array<string, mixed> $options Client options including the
      *        'success' and 'error' callbacks
@@ -149,6 +167,7 @@ class Client
         self::$responses = [];
         self::$error = null;
         self::$lastRequest = null;
+        self::$lastConfig = null;
         self::$realIo = false;
         self::$neverRespond = false;
     }
