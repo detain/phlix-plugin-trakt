@@ -181,7 +181,30 @@ class TraktPlugin implements LifecycleInterface, ConfigurableInterface
         // fromArray() takes the token fields verbatim, and the cipher itself
         // passes through any value it does not recognise as its own ciphertext
         // (legacy plaintext), so upgrades load correctly either way.
-        $this->settings = TraktSettings::fromArray($settings, $this->tokenCipher);
+        try {
+            $this->settings = TraktSettings::fromArray($settings, $this->tokenCipher);
+        } catch (TokenDecryptionFailedException $e) {
+            // M-TRAKT-20 (srphp m12): a stored envelope we cannot open is a
+            // custody failure, not a token. Degrade to UNCONNECTED — sync/
+            // scrobble prefs survive, tokens are dropped so hasTokens() is
+            // false and the reconnect gate asks for a fresh link — and be
+            // loud about it (silent verbatim pass-through used to loop
+            // 'v1:...' as a Bearer token through 400/401s forever).
+            $this->logger?->error(
+                'Trakt: stored tokens could not be decrypted (key rotation or corruption); re-link required',
+                ['error' => $e->getMessage()]
+            );
+            $fallback = TraktSettings::fromArray($settings, null);
+            $this->settings = new TraktSettings(
+                accessToken: null,
+                refreshToken: null,
+                expiresAt: null,
+                syncEnabled: $fallback->syncEnabled,
+                syncIntervalMinutes: $fallback->syncIntervalMinutes,
+                scrobbleEnabled: $fallback->scrobbleEnabled,
+                username: $fallback->username,
+            );
+        }
         $this->enabled = ($settings['enabled'] ?? false) === true;
     }
 
@@ -1223,6 +1246,15 @@ class TraktPlugin implements LifecycleInterface, ConfigurableInterface
             ? $tokens['refresh_token']
             : $this->settings->refreshToken;
         $expiresIn = is_int($tokens['expires_in'] ?? null) ? $tokens['expires_in'] : 0;
+        if ($expiresIn <= 0) {
+            // M-TRAKT-16 (srphp m8): keep the previous expiry rather than mint
+            // a bogus one, but never silently — a refresh that can say nothing
+            // about validity is worth a loud line (the next call re-checks
+            // expiry against the old value and refreshes again).
+            $this->logger?->warning(
+                'Trakt: token refresh response carried no usable expires_in; keeping previous expiry'
+            );
+        }
         $expiresAt = $expiresIn > 0 ? time() + $expiresIn : $this->settings->expiresAt;
 
         $this->settings = new TraktSettings(

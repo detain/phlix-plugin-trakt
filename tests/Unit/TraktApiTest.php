@@ -90,6 +90,42 @@ final class TraktApiTest extends TestCase
         $api->refreshAccessToken('old-refresh-token');
     }
 
+    /**
+     * M-TRAKT-16 (srphp m8): a 2xx token response without the token fields is
+     * a failed exchange — the boundary must throw, never hand back '' tokens
+     * that read as configured custody (that used to happen: ['access_token'
+     * => '', ...] straight out of the coercion block).
+     */
+    public function testExchangeCodeThrowsOnFieldlessTwoHundred(): void
+    {
+        $http = new MockHttpClient([[]]);
+        $api = new TraktApi($http, self::CLIENT_ID, self::CLIENT_SECRET, new NullLogger());
+
+        $this->expectException(TraktApiException::class);
+        $this->expectExceptionMessageMatches('/without access_token/');
+        $api->exchangeCode('auth-code', 'code-verifier');
+    }
+
+    public function testExchangeCodeThrowsWhenRefreshTokenMissing(): void
+    {
+        $http = new MockHttpClient([['access_token' => 'only-access']]);
+        $api = new TraktApi($http, self::CLIENT_ID, self::CLIENT_SECRET, new NullLogger());
+
+        $this->expectException(TraktApiException::class);
+        $this->expectExceptionMessageMatches('/without access_token\/refresh_token/');
+        $api->exchangeCode('auth-code', 'code-verifier');
+    }
+
+    public function testRefreshAccessTokenThrowsOnFieldlessTwoHundred(): void
+    {
+        $http = new MockHttpClient([['unexpected' => 'shape']]);
+        $api = new TraktApi($http, self::CLIENT_ID, self::CLIENT_SECRET, new NullLogger());
+
+        $this->expectException(TraktApiException::class);
+        $this->expectExceptionMessageMatches('/without access_token/');
+        $api->refreshAccessToken('old-refresh-token');
+    }
+
     public function testGetWatchedHistoryUsesCorrectEndpoint(): void
     {
         $http = new MockHttpClient([[]]);

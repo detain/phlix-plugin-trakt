@@ -13,6 +13,7 @@ use Phlix\Plugins\Scrobbler\Trakt\TraktHistorySync;
 use Phlix\Plugins\Scrobbler\Trakt\TraktPlugin;
 use Phlix\Plugins\Scrobbler\Trakt\TraktSettings;
 use Phlix\Plugins\Scrobbler\Trakt\TraktSettingsRepository;
+use Phlix\Plugins\Scrobbler\Trakt\SodiumTokenCipher;
 use Phlix\Shared\Events\Playback\PlaybackPaused;
 use Phlix\Shared\Events\Playback\PlaybackResumed;
 use Phlix\Shared\Events\Playback\PlaybackStarted;
@@ -223,6 +224,43 @@ final class TraktPluginTest extends TestCase
 
         $settings = $plugin->getSettings();
         $this->assertFalse($settings->syncEnabled);
+    }
+
+    /**
+     * M-TRAKT-20 (srphp m12): when configure() receives envelopes encrypted
+     * under a DIFFERENT key (operator key rotation), the plugin must degrade
+     * to UNCONNECTED — prefs survive, tokens are dropped so hasTokens() is
+     * false and the reconnect gate applies — instead of riding the literal
+     * 'v1:...' ciphertext as a Bearer token. No exception escapes configure.
+     */
+    public function testConfigureDegradesToUnconnectedOnUndecryptableEnvelope(): void
+    {
+        $oldKey = str_repeat("\x11", SODIUM_CRYPTO_SECRETBOX_KEYBYTES);
+        $newKey = str_repeat("\x22", SODIUM_CRYPTO_SECRETBOX_KEYBYTES);
+        $oldCipher = new SodiumTokenCipher($oldKey);
+
+        $plugin = new TraktPlugin(
+            settings: new TraktSettings(),
+            logger: new NullLogger(),
+            tokenCipher: new SodiumTokenCipher($newKey),
+        );
+
+        $plugin->configure([
+            'enabled' => true,
+            'access_token' => $oldCipher->encrypt('rotated-out-access'),
+            'refresh_token' => $oldCipher->encrypt('rotated-out-refresh'),
+            'username' => 'stale-user',
+            'sync_enabled' => false,
+        ]);
+
+        $settings = $plugin->getSettings();
+        $this->assertFalse($settings->hasTokens(), 'undecryptable envelopes must not count as token custody');
+        $this->assertFalse($settings->isConfigured(), 'the account must read as needing a fresh link');
+        $this->assertNull($settings->accessToken);
+        $this->assertNull($settings->expiresAt);
+        // The non-custody preferences survive the degrade untouched:
+        $this->assertFalse($settings->syncEnabled);
+        $this->assertSame('stale-user', $settings->username);
     }
 
     // --- onDisable -----------------------------------------------------------

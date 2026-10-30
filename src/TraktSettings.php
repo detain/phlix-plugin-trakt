@@ -176,13 +176,19 @@ final class TraktSettings
      * Note: This does not validate token expiration. Use isTokenExpired()
      * for that check.
      *
-     * @return bool True when both access and refresh tokens are present
+     * M-TRAKT-16 (srphp m8): "present" means a USABLE token — a coerced
+     * empty string (what a fieldless 2xx used to produce at the API
+     * boundary) is not custody of a token. Callers gate re-auth on this,
+     * so it must not report true for '' values.
+     *
+     * @return bool True when both access and refresh tokens are present and non-empty
      *
      * @since 1.1.0
      */
     public function hasTokens(): bool
     {
-        return $this->accessToken !== null && $this->refreshToken !== null;
+        return is_string($this->accessToken) && $this->accessToken !== ''
+            && is_string($this->refreshToken) && $this->refreshToken !== '';
     }
 
     /**

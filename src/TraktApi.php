@@ -129,9 +129,21 @@ class TraktApi
             throw new TraktApiException($message);
         }
 
+        // M-TRAKT-16 (srphp m8): a 2xx without the token fields is a FAILURE,
+        // not a token set. Coercing the missing fields to '' handed callers a
+        // '' token that hasTokens() used to read as configured, and every
+        // later Bearer call 400/401'd forever with no path back. Fail loud at
+        // the boundary instead: this method's contract is now "returns a
+        // non-empty access_token/refresh_token pair or throws".
+        $accessToken = is_string($response['access_token'] ?? null) ? $response['access_token'] : '';
+        $refreshToken = is_string($response['refresh_token'] ?? null) ? $response['refresh_token'] : '';
+        if ($accessToken === '' || $refreshToken === '') {
+            throw new TraktApiException('Token exchange returned a response without access_token/refresh_token');
+        }
+
         return [
-            'access_token' => is_string($response['access_token'] ?? null) ? $response['access_token'] : '',
-            'refresh_token' => is_string($response['refresh_token'] ?? null) ? $response['refresh_token'] : '',
+            'access_token' => $accessToken,
+            'refresh_token' => $refreshToken,
             'expires_in' => is_int($response['expires_in'] ?? null) ? $response['expires_in'] : 0,
         ];
     }
@@ -165,8 +177,15 @@ class TraktApi
             throw new TraktApiException($message);
         }
 
+        // M-TRAKT-16 (srphp m8): same boundary law as exchangeCode() — a 2xx
+        // without a usable access_token is a failed refresh, not a token set.
+        $accessToken = is_string($response['access_token'] ?? null) ? $response['access_token'] : '';
+        if ($accessToken === '') {
+            throw new TraktApiException('Token refresh returned a response without access_token');
+        }
+
         return [
-            'access_token' => is_string($response['access_token'] ?? null) ? $response['access_token'] : '',
+            'access_token' => $accessToken,
             'refresh_token' => is_string($response['refresh_token'] ?? null) ? $response['refresh_token'] : '',
             'expires_in' => is_int($response['expires_in'] ?? null) ? $response['expires_in'] : 0,
         ];

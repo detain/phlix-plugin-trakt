@@ -42,9 +42,17 @@ interface TokenCipher
      * was enabled) by returning it unchanged, so an upgrade does not lock the
      * user out of their stored credentials.
      *
+     * A value that IS recognised as the implementation's own envelope but
+     * cannot be opened (wrong key after rotation, corrupted or tampered
+     * payload) MUST raise {@see TokenDecryptionFailedException} — never pass
+     * the envelope through verbatim (M-TRAKT-20).
+     *
      * @param string $cipher Ciphertext produced by {@see TokenCipher::encrypt()}
      *
      * @return string The decrypted plaintext token
+     *
+     * @throws TokenDecryptionFailedException When a value shaped like this
+     *         cipher's own envelope cannot be opened with the current key
      *
      * @since 1.1.0
      */

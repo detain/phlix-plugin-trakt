@@ -6,6 +6,7 @@ namespace Phlix\Tests\Unit\Plugins\Scrobbler\Trakt;
 
 use Phlix\Plugins\Scrobbler\Trakt\SodiumTokenCipher;
 use Phlix\Plugins\Scrobbler\Trakt\TokenCipher;
+use Phlix\Plugins\Scrobbler\Trakt\TokenDecryptionFailedException;
 use Phlix\Plugins\Scrobbler\Trakt\TraktSettings;
 use PHPUnit\Framework\TestCase;
 
@@ -111,6 +112,18 @@ final class TraktSettingsTest extends TestCase
         $this->assertFalse($settingsWithoutAccess->hasTokens());
         $this->assertFalse($settingsWithoutRefresh->hasTokens());
         $this->assertFalse($settingsWithoutTokens->hasTokens());
+
+        // M-TRAKT-16 (srphp m8): empty strings are NOT token custody. Before
+        // the boundary fix a fieldless 2xx produced exactly these values and
+        // hasTokens() said yes.
+        $this->assertFalse(
+            (new TraktSettings(accessToken: '', refreshToken: 'refresh'))->hasTokens(),
+            'an empty access token must not read as configured'
+        );
+        $this->assertFalse(
+            (new TraktSettings(accessToken: 'access', refreshToken: ''))->hasTokens(),
+            'an empty refresh token must not read as configured'
+        );
     }
 
     public function testIsConfigured(): void
@@ -341,10 +354,12 @@ final class TraktSettingsTest extends TestCase
     }
 
     /**
-     * decrypt() with a payload shorter than the nonce length returns the original
-     * ciphertext rather than crashing.
+     * decrypt() with a payload shorter than the nonce length RAISES — the
+     * value carries our own v1: marker, so passing it back verbatim let a
+     * corrupt envelope ride as a "token" forever (M-TRAKT-20; this pin
+     * formerly encoded the bug-legal pass-through behavior).
      */
-    public function testSodiumCipherDecryptWithPayloadShorterThanNonceReturnsOriginal(): void
+    public function testSodiumCipherDecryptWithPayloadShorterThanNonceThrows(): void
     {
         $key = str_repeat("\x11", SODIUM_CRYPTO_SECRETBOX_KEYBYTES);
         $cipher = new SodiumTokenCipher($key);
@@ -353,15 +368,15 @@ final class TraktSettingsTest extends TestCase
         $shortPayload = base64_encode('too-short');
         $tampered = 'v1:' . $shortPayload;
 
-        $result = $cipher->decrypt($tampered);
-
-        $this->assertSame($tampered, $result);
+        $this->expectException(TokenDecryptionFailedException::class);
+        $cipher->decrypt($tampered);
     }
 
     /**
-     * decrypt() with an invalid base64 string returns the original ciphertext.
+     * decrypt() with an invalid base64 string under our marker RAISES
+     * (M-TRAKT-20 flip of the former pass-through pin).
      */
-    public function testSodiumCipherDecryptWithInvalidBase64ReturnsOriginal(): void
+    public function testSodiumCipherDecryptWithInvalidBase64Throws(): void
     {
         $key = str_repeat("\x11", SODIUM_CRYPTO_SECRETBOX_KEYBYTES);
         $cipher = new SodiumTokenCipher($key);
@@ -369,15 +384,15 @@ final class TraktSettingsTest extends TestCase
         // Create a tampered ciphertext with invalid base64 after the prefix
         $tampered = 'v1:!!!not-valid-base64!!!';
 
-        $result = $cipher->decrypt($tampered);
-
-        $this->assertSame($tampered, $result);
+        $this->expectException(TokenDecryptionFailedException::class);
+        $cipher->decrypt($tampered);
     }
 
     /**
-     * decrypt() with a valid prefix but wrong key returns the original ciphertext.
+     * decrypt() with a valid-prefix envelope from ANOTHER key (rotation)
+     * RAISES (M-TRAKT-20 flip of the former pass-through pin).
      */
-    public function testSodiumCipherDecryptWithWrongKeyReturnsOriginal(): void
+    public function testSodiumCipherDecryptWithWrongKeyThrows(): void
     {
         $key1 = str_repeat("\x11", SODIUM_CRYPTO_SECRETBOX_KEYBYTES);
         $key2 = str_repeat("\x22", SODIUM_CRYPTO_SECRETBOX_KEYBYTES);
@@ -388,16 +403,16 @@ final class TraktSettingsTest extends TestCase
         $plaintext = 'secret-message';
         $encrypted = $cipher1->encrypt($plaintext);
 
-        // Try to decrypt with key2 - should return original ciphertext
-        $result = $cipher2->decrypt($encrypted);
-
-        $this->assertSame($encrypted, $result);
+        // Decrypting with key2 is a custody failure, not a token.
+        $this->expectException(TokenDecryptionFailedException::class);
+        $cipher2->decrypt($encrypted);
     }
 
     /**
-     * decrypt() with tampered ciphertext (wrong nonce/body) returns original.
+     * decrypt() with tampered ciphertext (wrong nonce/body) RAISES
+     * (M-TRAKT-20 flip of the former pass-through pin).
      */
-    public function testSodiumCipherDecryptWithTamperedCiphertextReturnsOriginal(): void
+    public function testSodiumCipherDecryptWithTamperedCiphertextThrows(): void
     {
         $key = str_repeat("\x11", SODIUM_CRYPTO_SECRETBOX_KEYBYTES);
         $cipher = new SodiumTokenCipher($key);
@@ -411,9 +426,21 @@ final class TraktSettingsTest extends TestCase
         $tamperedPayload = base64_encode(str_repeat("\x00", SODIUM_CRYPTO_SECRETBOX_NONCEBYTES + 1) . 'tampered');
         $tampered = 'v1:' . $tamperedPayload;
 
-        $result = $cipher->decrypt($tampered);
+        $this->expectException(TokenDecryptionFailedException::class);
+        $cipher->decrypt($tampered);
+    }
 
-        $this->assertSame($tampered, $result);
+    /**
+     * M-TRAKT-20 belt: a value WITHOUT the v1 marker still passes through —
+     * the throw law must never capture legacy plaintext, only envelopes we
+     * issued and can no longer open.
+     */
+    public function testDecryptKeepsPassingThroughUnmarkedLegacyValues(): void
+    {
+        $key = str_repeat("\x11", SODIUM_CRYPTO_SECRETBOX_KEYBYTES);
+        $cipher = new SodiumTokenCipher($key);
+
+        $this->assertSame('legacy-plain-token', $cipher->decrypt('legacy-plain-token'));
     }
 }
 

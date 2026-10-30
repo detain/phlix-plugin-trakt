@@ -134,8 +134,14 @@ final class SodiumTokenCipher implements TokenCipher
 
         $payload = base64_decode(substr($cipher, strlen(self::PREFIX)), true);
         if (!is_string($payload) || strlen($payload) <= SODIUM_CRYPTO_SECRETBOX_NONCEBYTES) {
-            // Corrupt/truncated: return the original value rather than crashing.
-            return $cipher;
+            // M-TRAKT-20 (srphp m12): a value WE marked (v1:) that is not a
+            // decodable v1 envelope is a hard custody failure — returning it
+            // verbatim handed callers a literal 'v1:...' string as the Bearer
+            // token, looping 400/401 forever with no path back. Fail loud;
+            // the caller degrades to unconfigured + a re-link gate.
+            throw new TokenDecryptionFailedException(
+                'Stored token carries the v1 envelope marker but is not a decodable v1 payload'
+            );
         }
 
         $nonce = substr($payload, 0, SODIUM_CRYPTO_SECRETBOX_NONCEBYTES);
@@ -143,9 +149,12 @@ final class SodiumTokenCipher implements TokenCipher
 
         $plain = sodium_crypto_secretbox_open($body, $nonce, $this->key);
         if ($plain === false) {
-            // Wrong key or tampered ciphertext: return the original (do not throw
-            // inside a resident worker).
-            return $cipher;
+            // M-TRAKT-20: wrong key (rotation) or tampered ciphertext — same
+            // law as the corrupt-envelope branch above. Never throw away
+            // silently, never return the envelope as if it were plaintext.
+            throw new TokenDecryptionFailedException(
+                'Stored token failed to decrypt with the current key (wrong key or tampered ciphertext)'
+            );
         }
 
         return $plain;
