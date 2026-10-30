@@ -1103,7 +1103,14 @@ class TraktPlugin implements LifecycleInterface, ConfigurableInterface
      * local expiry — a 401 means Trakt rejected the token regardless of what
      * the locally-cached `expires_at` says, so we attempt exactly one refresh
      * (rotating + persisting the tokens) and report whether the caller may
-     * retry. The single-flight lock (B4) will wrap the same refresh path.
+     * retry. The exchange runs THROUGH the same single-flight gate (B4) the
+     * proactive path uses: a concurrent caller either observes a completed
+     * rotation (reused, no second POST) or finds an exchange still in flight
+     * (refused), because Trakt rotates the refresh token on every exchange and
+     * a second POST of the same one invalidates the account. The "another
+     * refresh already produced a new pair" test is the rotation of the
+     * refresh token itself — an expired/invalidated pair is replaced exactly
+     * when a new refresh token appears.
      *
      * @param TraktAuthenticationException $e The auth failure that was caught
      * @param string $context Human label for log context (e.g. "scrobble stop")
@@ -1116,7 +1123,8 @@ class TraktPlugin implements LifecycleInterface, ConfigurableInterface
             'error' => $e->getMessage(),
         ]);
 
-        if ($this->api === null) {
+        $api = $this->api;
+        if ($api === null) {
             return false;
         }
 
@@ -1126,19 +1134,53 @@ class TraktPlugin implements LifecycleInterface, ConfigurableInterface
             return false;
         }
 
-        try {
-            $tokens = $this->api->refreshAccessToken($refreshToken);
-        } catch (TraktApiException $refreshError) {
-            $this->logger?->warning('Trakt: token refresh after auth failure failed', [
-                'error' => $refreshError->getMessage(),
-            ]);
-            return false;
+        // Single-flight gate (B4), same protocol as ensureFreshToken() with a
+        // rotation check swapped for the expiry check: the 401 says the CURRENT
+        // pair is dead, so "usable without another exchange" means another
+        // caller already replaced the pair, not that a clock agrees.
+        if ($this->refreshInProgress) {
+            $this->awaitInFlightRefresh();
+
+            if ($this->settings->refreshToken !== $refreshToken) {
+                // The owner rotated the pair; its fresh token serves our retry.
+                return true;
+            }
+
+            if ($this->refreshInProgress) {
+                // Re-entered synchronously while the owner is mid-exchange
+                // (no coroutine to yield to). Starting a second exchange here
+                // is the very double-POST this gate exists to prevent.
+                return false;
+            }
+
+            // The in-flight refresh completed but failed to rotate (gate
+            // released, pair unchanged). Fall through and try our own.
         }
 
-        $this->applyRefreshedTokens($tokens);
-        $this->logger?->info('Trakt: token refreshed after auth failure');
+        $this->beginRefresh();
+        try {
+            // Re-check under the gate: a rotation may have completed between
+            // the checks above and acquiring ownership.
+            if ($this->settings->refreshToken !== $refreshToken) {
+                return true;
+            }
 
-        return true;
+            try {
+                $tokens = $api->refreshAccessToken($refreshToken);
+            } catch (TraktApiException $refreshError) {
+                $this->logger?->warning('Trakt: token refresh after auth failure failed', [
+                    'error' => $refreshError->getMessage(),
+                ]);
+                return false;
+            }
+
+            $this->applyRefreshedTokens($tokens);
+            $this->logger?->info('Trakt: token refreshed after auth failure');
+
+            return true;
+        } finally {
+            $this->endRefresh();
+        }
     }
 
     /**

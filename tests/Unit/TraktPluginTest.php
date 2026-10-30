@@ -852,6 +852,94 @@ final class TraktPluginTest extends TestCase
         $this->assertSame('coro-refresh', $settings->refreshToken);
     }
 
+    /**
+     * The 401-recovery path must run THROUGH the single-flight rotation gate
+     * (review trakt__secaudit Major-1 / trakt__srphp M4: refreshAfterAuthFailure()
+     * called the exchange directly, so the account-invalidation race reopened
+     * exactly where Trakt rotates the refresh token). The fake's first exchange
+     * re-enters the plugin with a SECOND stop event — mid-exchange, while the
+     * gate is held — whose scrobble also 401s. The re-entrant caller must not
+     * POST the same refresh token a second time.
+     */
+    public function testConcurrent401RecoveryTriggersExactlyOneExchange(): void
+    {
+        $api = new ReentrantAuth401Api();
+        $api->refreshResult = [
+            'access_token' => 'rotated-access',
+            'refresh_token' => 'rotated-refresh',
+            'expires_in' => 7200,
+        ];
+        $repo = new RecordingSettingsRepository();
+        $settings = $this->freshSettings();
+
+        $plugin = new TraktPlugin($settings, new NullLogger(), $api, $repo);
+        $container = new StubContainer([
+            \Phlix\Media\Library\ItemRepository::class => new FakeItemRepository(),
+            \Phlix\Auth\WatchHistory::class => null,
+        ]);
+        $plugin->onEnable($container);
+        $plugin->configure(array_merge($settings->toArray(), ['enabled' => true]));
+
+        $api->plugin = $plugin;
+
+        $plugin->onPlaybackStopped($this->stopEvent());
+
+        $this->assertSame(
+            1,
+            $api->refreshCalls,
+            'the /oauth/token exchange behind a 401 recovery must happen exactly once',
+        );
+        $this->assertFalse(
+            $api->reentrantExchange,
+            'a 401 recovery arriving while the gate is held must NOT exchange the rotating refresh token again',
+        );
+        // outer 401 + re-entrant 401 + the owner's single retry.
+        $this->assertSame(3, $api->scrobbleStopCalls);
+
+        $rotated = $plugin->getSettings();
+        $this->assertSame('rotated-access', $rotated->accessToken);
+        $this->assertSame('rotated-refresh', $rotated->refreshToken);
+        $this->assertNotEmpty($repo->saved, 'the rotated pair is persisted once');
+    }
+
+    /**
+     * Two coroutines whose scrobbles both 401 while one gate-owned refresh is
+     * mid-exchange: the awaiter must observe the rotation (double-checked
+     * locking) and retry WITHOUT a second exchange. ext-swoole only.
+     */
+    public function testCoroutineConcurrent401RecoveriesExchangeOnce(): void
+    {
+        if (!\extension_loaded('swoole')) {
+            $this->markTestSkipped('ext-swoole not available; covered by the re-entrant 401 unit test');
+        }
+
+        $api = new YieldingAuth401Api();
+        $repo = new RecordingSettingsRepository();
+        $settings = $this->freshSettings();
+
+        $plugin = new TraktPlugin($settings, new NullLogger(), $api, $repo);
+        $container = new StubContainer([
+            \Phlix\Media\Library\ItemRepository::class => new FakeItemRepository(),
+            \Phlix\Auth\WatchHistory::class => null,
+        ]);
+        $plugin->onEnable($container);
+        $plugin->configure(array_merge($settings->toArray(), ['enabled' => true]));
+
+        \Swoole\Coroutine\run(static function () use ($plugin): void {
+            \Swoole\Coroutine\go(static function () use ($plugin): void {
+                $plugin->onPlaybackStopped(new PlaybackStopped('sess-a', 'user-1', 'mi-1', 'dev-1', 10_000_000, false));
+            });
+            \Swoole\Coroutine\go(static function () use ($plugin): void {
+                $plugin->onPlaybackStopped(new PlaybackStopped('sess-b', 'user-1', 'mi-1', 'dev-1', 10_000_000, false));
+            });
+        });
+
+        $this->assertSame(1, $api->refreshCalls, 'exactly one /oauth/token exchange across both coroutines');
+        // two first-pass 401s + two retries with the rotated token.
+        $this->assertSame(4, $api->scrobbleStopCalls);
+        $this->assertSame('rotated-access', $plugin->getSettings()->accessToken);
+    }
+
     // --- S1: encrypt tokens at rest on the persist path ---------------------
 
     /**
@@ -1375,6 +1463,114 @@ final class YieldingRefreshApi extends TraktApi
 
         // Yield so the sibling coroutine runs and parks on the gate before we
         // rotate. Cooperative — never a blocking sleep.
+        if (\class_exists(\Swoole\Coroutine::class) && \Swoole\Coroutine::getCid() > 0) {
+            \Swoole\Coroutine::sleep(0.02);
+        }
+
+        return $this->refreshResult;
+    }
+}
+
+/**
+ * Fake whose scrobbles reject any token but the rotated one (a true 401 until
+ * rotation) and whose refreshAccessToken() re-enters the plugin with a second
+ * PlaybackStopped while the exchange is in flight — the 401-recovery twin of
+ * ReentrantRefreshApi. A sound gate refuses the re-entrant caller a second
+ * exchange (review trakt__secaudit Major-1 / trakt__srphp M4).
+ */
+final class ReentrantAuth401Api extends TraktApi
+{
+    public int $refreshCalls = 0;
+    public int $scrobbleStopCalls = 0;
+    public bool $reentrantExchange = false;
+    public ?TraktPlugin $plugin = null;
+    private bool $reentered = false;
+
+    /** @var array<string, mixed> */
+    public array $refreshResult = [
+        'access_token' => 'rotated-access',
+        'refresh_token' => 'rotated-refresh',
+        'expires_in' => 7200,
+    ];
+
+    public function __construct()
+    {
+        parent::__construct(new NullHttpClient(), 'client-id', 'client-secret', new NullLogger());
+    }
+
+    public function scrobbleStop(\Phlix\Media\Library\MediaItem $item, float $progress, string $accessToken): array
+    {
+        $this->scrobbleStopCalls++;
+
+        if ($accessToken !== 'rotated-access') {
+            throw new TraktAuthenticationException('Unauthorized', 401);
+        }
+
+        return ['action' => 'stop', 'watched_at' => '2026-10-30T00:00:00Z'];
+    }
+
+    public function refreshAccessToken(string $refreshToken): array
+    {
+        $this->refreshCalls++;
+
+        if (!$this->reentered && $this->plugin !== null) {
+            $this->reentered = true;
+            $callsBefore = $this->refreshCalls;
+            // Second playback stops mid-exchange → its scrobble 401s → its
+            // recovery must be refused by the single-flight gate.
+            $this->plugin->onPlaybackStopped(new PlaybackStopped(
+                'sess-2',
+                'user-1',
+                'mi-1',
+                'dev-1',
+                10_000_000,
+                false,
+            ));
+            if ($this->refreshCalls > $callsBefore) {
+                $this->reentrantExchange = true;
+            }
+        }
+
+        return $this->refreshResult;
+    }
+}
+
+/**
+ * Like ReentrantAuth401Api but yields (instead of re-entering) inside the
+ * exchange, so two real coroutines can race the 401-recovery path. ext-swoole.
+ */
+final class YieldingAuth401Api extends TraktApi
+{
+    public int $refreshCalls = 0;
+    public int $scrobbleStopCalls = 0;
+
+    /** @var array<string, mixed> */
+    public array $refreshResult = [
+        'access_token' => 'rotated-access',
+        'refresh_token' => 'rotated-refresh',
+        'expires_in' => 7200,
+    ];
+
+    public function __construct()
+    {
+        parent::__construct(new NullHttpClient(), 'client-id', 'client-secret', new NullLogger());
+    }
+
+    public function scrobbleStop(\Phlix\Media\Library\MediaItem $item, float $progress, string $accessToken): array
+    {
+        $this->scrobbleStopCalls++;
+
+        if ($accessToken !== 'rotated-access') {
+            throw new TraktAuthenticationException('Unauthorized', 401);
+        }
+
+        return ['action' => 'stop', 'watched_at' => '2026-10-30T00:00:00Z'];
+    }
+
+    public function refreshAccessToken(string $refreshToken): array
+    {
+        $this->refreshCalls++;
+
         if (\class_exists(\Swoole\Coroutine::class) && \Swoole\Coroutine::getCid() > 0) {
             \Swoole\Coroutine::sleep(0.02);
         }
