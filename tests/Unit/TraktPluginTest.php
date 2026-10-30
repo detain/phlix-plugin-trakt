@@ -1222,6 +1222,216 @@ final class TraktPluginTest extends TestCase
         $this->assertSame('', $seam->lastProfileId, 'must not delegate when sync is disabled');
     }
 
+    // --- pull-path token lifecycle (M-TRAKT-07 / M-TRAKT-11) ----------------
+
+    /**
+     * A scheduled tick with an EXPIRED token must rotate it via the
+     * single-flight gate BEFORE pulling (review trakt__secaudit Major-2 /
+     * trakt__srphp M6: the pull path never refreshed at all — once the ~3-month
+     * access token expired, history pull died silently forever, and with
+     * scrobble_enabled off nothing ever called ensureFreshToken()).
+     */
+    public function testScheduledPullRefreshesExpiredTokenBeforeFetching(): void
+    {
+        $api = new FakeTraktApi();
+        $api->refreshResult = [
+            'access_token' => 'rotated-access',
+            'refresh_token' => 'rotated-refresh',
+            'expires_in' => 7200,
+        ];
+        $settings = $this->expiredSettings();
+
+        $seam = new RecordingHistorySync(
+            $api,
+            new \Phlix\Auth\WatchHistory(),
+            $settings,
+            new \Workerman\MySQL\TestableConnection(),
+            new NullLogger(),
+        );
+
+        $plugin = new SeamTraktPlugin($settings, new NullLogger(), $api, new RecordingSettingsRepository());
+        $plugin->configure(array_merge($settings->toArray(), ['enabled' => true]));
+        $plugin->historySyncSeam = $seam;
+
+        $ref = new \ReflectionClass($plugin);
+        $watchHistProp = $ref->getParentClass()->getProperty('watchHistory');
+        $watchHistProp->setAccessible(true);
+        $watchHistProp->setValue($plugin, new \Phlix\Auth\WatchHistory());
+        $dbProp = $ref->getParentClass()->getProperty('db');
+        $dbProp->setAccessible(true);
+        $dbProp->setValue($plugin, new \Workerman\MySQL\TestableConnection());
+
+        $method = $ref->getMethod('runScheduledSync');
+        $method->setAccessible(true);
+        $method->invoke($plugin);
+
+        $this->assertSame(1, $api->refreshCalls, 'an expired token must be rotated proactively before the pull');
+        $this->assertSame(1, $seam->pullCalls, 'the tick must still pull after the successful rotation');
+        $this->assertSame('default', $seam->lastProfileId);
+    }
+
+    /**
+     * When the proactive rotation cannot succeed, the tick must skip the pull
+     * (no doomed HTTP round-trip, silent-death warning logged) instead of
+     * grinding every subsequent tick against a dead credential.
+     */
+    public function testScheduledPullSkipsTickWhenRefreshImpossible(): void
+    {
+        $api = new FakeTraktApi();
+        $api->throwOnFirstRefresh = true;
+        $settings = $this->expiredSettings();
+
+        $seam = new RecordingHistorySync(
+            $api,
+            new \Phlix\Auth\WatchHistory(),
+            $settings,
+            new \Workerman\MySQL\TestableConnection(),
+            new NullLogger(),
+        );
+
+        $plugin = new SeamTraktPlugin($settings, new NullLogger(), $api, new RecordingSettingsRepository());
+        $plugin->configure(array_merge($settings->toArray(), ['enabled' => true]));
+        $plugin->historySyncSeam = $seam;
+
+        $ref = new \ReflectionClass($plugin);
+        $watchHistProp = $ref->getParentClass()->getProperty('watchHistory');
+        $watchHistProp->setAccessible(true);
+        $watchHistProp->setValue($plugin, new \Phlix\Auth\WatchHistory());
+        $dbProp = $ref->getParentClass()->getProperty('db');
+        $dbProp->setAccessible(true);
+        $dbProp->setValue($plugin, new \Workerman\MySQL\TestableConnection());
+
+        $method = $ref->getMethod('runScheduledSync');
+        $method->setAccessible(true);
+        $method->invoke($plugin);
+
+        $this->assertSame(1, $api->refreshCalls, 'the refresh attempt is made once');
+        $this->assertSame(0, $seam->pullCalls, 'a failed rotation must skip the doomed pull');
+        $this->assertSame('', $seam->lastProfileId);
+    }
+
+    /**
+     * The host-driven on-demand entry point obeys the same law as the tick:
+     * expired token first rotates through the gate, then pulls.
+     */
+    public function testOnDemandPullRefreshesExpiredTokenBeforeFetching(): void
+    {
+        $api = new FakeTraktApi();
+        $api->refreshResult = [
+            'access_token' => 'rotated-access',
+            'refresh_token' => 'rotated-refresh',
+            'expires_in' => 7200,
+        ];
+        $settings = $this->expiredSettings();
+
+        $seam = new RecordingHistorySync(
+            $api,
+            new \Phlix\Auth\WatchHistory(),
+            $settings,
+            new \Workerman\MySQL\TestableConnection(),
+            new NullLogger(),
+        );
+
+        $plugin = new SeamTraktPlugin($settings, new NullLogger(), $api, new RecordingSettingsRepository());
+        $plugin->configure(array_merge($settings->toArray(), ['enabled' => true]));
+        $plugin->historySyncSeam = $seam;
+
+        $container = new StubContainer([
+            \Phlix\Media\Library\ItemRepository::class => new FakeItemRepository(),
+            \Phlix\Auth\WatchHistory::class => new \Phlix\Auth\WatchHistory(),
+            \Workerman\MySQL\Connection::class => new \Workerman\MySQL\TestableConnection(),
+        ]);
+
+        $written = $plugin->syncHistoryFromTrakt($container, 'profile-x');
+
+        $this->assertSame(0, $written, 'the seam returns its configured count (0)');
+        $this->assertSame(1, $api->refreshCalls);
+        $this->assertSame(1, $seam->pullCalls);
+        $this->assertSame('profile-x', $seam->lastProfileId);
+    }
+
+    /**
+     * An authentication error raised INSIDE the pull is treated as "one gated
+     * refresh then ONE re-pull" (review trakt__secaudit Major-2 cure). Before
+     * the fix the 401 was swallowed by the sync layer's parent catch — one
+     * generic warning line — so a locally-unexpired-but-server-rejected token
+     * meant permanent silent sync death until manual re-auth.
+     */
+    public function testOnDemandPullRecoversWithOneRefreshAndOneRePull(): void
+    {
+        $api = new FakeTraktApi();
+        $api->refreshResult = [
+            'access_token' => 'rotated-access',
+            'refresh_token' => 'rotated-refresh',
+            'expires_in' => 7200,
+        ];
+        $settings = $this->freshSettings();
+
+        $seam = new RecordingHistorySync(
+            $api,
+            new \Phlix\Auth\WatchHistory(),
+            $settings,
+            new \Workerman\MySQL\TestableConnection(),
+            new NullLogger(),
+        );
+        $seam->throwAuthOnce = true;
+        $seam->returnValue = 2;
+
+        $plugin = new SeamTraktPlugin($settings, new NullLogger(), $api, new RecordingSettingsRepository());
+        $plugin->configure(array_merge($settings->toArray(), ['enabled' => true]));
+        $plugin->historySyncSeam = $seam;
+
+        $container = new StubContainer([
+            \Phlix\Media\Library\ItemRepository::class => new FakeItemRepository(),
+            \Phlix\Auth\WatchHistory::class => new \Phlix\Auth\WatchHistory(),
+            \Workerman\MySQL\Connection::class => new \Workerman\MySQL\TestableConnection(),
+        ]);
+
+        $written = $plugin->syncHistoryFromTrakt($container, 'profile-x');
+
+        $this->assertSame(2, $written, 'the re-pull result reaches the caller');
+        $this->assertSame(1, $api->refreshCalls, 'exactly one gated refresh after the 401');
+        $this->assertSame(2, $seam->pullCalls, 'one pull, one re-pull — never a retry loop');
+        $this->assertSame('rotated-access', $plugin->getSettings()->accessToken);
+    }
+
+    /**
+     * When the reactive refresh itself fails, the entry point reports 0 and
+     * does not re-pull (the scrobble-side warning already names the cause);
+     * no exception escapes to the host and no second pull is attempted.
+     */
+    public function testOnDemandPullGivesUpCleanlyWhenReactiveRefreshFails(): void
+    {
+        $api = new FakeTraktApi();
+        $api->throwOnFirstRefresh = true;
+        $settings = $this->freshSettings();
+
+        $seam = new RecordingHistorySync(
+            $api,
+            new \Phlix\Auth\WatchHistory(),
+            $settings,
+            new \Workerman\MySQL\TestableConnection(),
+            new NullLogger(),
+        );
+        $seam->throwAuthOnce = true;
+
+        $plugin = new SeamTraktPlugin($settings, new NullLogger(), $api, new RecordingSettingsRepository());
+        $plugin->configure(array_merge($settings->toArray(), ['enabled' => true]));
+        $plugin->historySyncSeam = $seam;
+
+        $container = new StubContainer([
+            \Phlix\Media\Library\ItemRepository::class => new FakeItemRepository(),
+            \Phlix\Auth\WatchHistory::class => new \Phlix\Auth\WatchHistory(),
+            \Workerman\MySQL\Connection::class => new \Workerman\MySQL\TestableConnection(),
+        ]);
+
+        $written = $plugin->syncHistoryFromTrakt($container);
+
+        $this->assertSame(0, $written);
+        $this->assertSame(1, $api->refreshCalls);
+        $this->assertSame(1, $seam->pullCalls, 'a failed reactive refresh must not re-pull');
+    }
+
     // --- helpers ------------------------------------------------------------
 
     private function makeWiredPlugin(
@@ -1783,15 +1993,23 @@ final class SeamTraktPlugin extends TraktPlugin
 /**
  * TraktHistorySync stub recording the profile it was asked to reconcile and
  * returning a configurable written-count, so delegation can be asserted.
+ * `throwAuthOnce` simulates a 401 surfacing from inside the real pull.
  */
 final class RecordingHistorySync extends TraktHistorySync
 {
     public string $lastProfileId = '';
     public int $returnValue = 0;
+    public int $pullCalls = 0;
+    public bool $throwAuthOnce = false;
 
     public function syncTraktToPhlix(string $profileId): int
     {
         $this->lastProfileId = $profileId;
+        $this->pullCalls++;
+
+        if ($this->throwAuthOnce && $this->pullCalls === 1) {
+            throw new TraktAuthenticationException('Unauthorized', 401);
+        }
 
         return $this->returnValue;
     }

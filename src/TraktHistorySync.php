@@ -128,6 +128,22 @@ class TraktHistorySync
         return $all;
     }
 
+    /**
+     * Pull Trakt history → Phlix local history for one profile.
+     *
+     * Transient API failures are logged and yield a 0-count return WITHOUT
+     * touching local state; an {@see TraktAuthenticationException} is
+     * rethrown — credential recovery (one gated refresh then one re-pull) is
+     * the pull entries' job in {@see TraktPlugin}, not this layer's. Conflict
+     * policy of the shipped code is described on the entry-point prose above
+     * (and is NOT a timestamped last-write-wins merge).
+     *
+     * @param string $profileId Profile ID to sync history for
+     *
+     * @return int Number of entries written (0 on transient fetch failure)
+     *
+     * @throws TraktAuthenticationException When Trakt rejects the credential
+     */
     public function syncTraktToPhlix(string $profileId): int
     {
         if (!$this->settings->isConfigured()) {
@@ -142,6 +158,13 @@ class TraktHistorySync
 
         try {
             $history = $this->fetchAllWatchedHistory();
+        } catch (TraktAuthenticationException $e) {
+            // An authz failure is NOT a transient blip. Rethrow so the pull
+            // entries in TraktPlugin can run their recovery ("one gated
+            // refresh then one re-pull"); the historic blanket parent-catch
+            // downgraded permanent silent sync death to one warning line
+            // (review trakt__secaudit Major-2 / trakt__srphp M6).
+            throw $e;
         } catch (TraktApiException $e) {
             $this->logger->warning('TraktHistorySync: failed to fetch Trakt history', [
                 'error' => $e->getMessage(),

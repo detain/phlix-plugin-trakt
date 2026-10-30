@@ -332,7 +332,10 @@ class TraktPlugin implements LifecycleInterface, ConfigurableInterface
      * (DB-persisted) settings + collaborators and delegates the actual
      * reconciliation to {@see TraktHistorySync::syncTraktToPhlix()} — this method
      * adds NO reconciliation logic of its own (resume positions and pagination
-     * live inside the sync).
+     * live inside the sync). It DOES own the credential lifecycle: the pull
+     * proactively rotates an expired token through the single-flight gate and
+     * treats a server-side 401 as "one gated refresh then one re-pull"
+     * ({@see self::pullHistoryWithAuthRecovery()}).
      *
      * The resident server resolves a fresh entry instance each tick which
      * applies the persisted settings but does NOT call {@see self::onEnable()},
@@ -348,7 +351,8 @@ class TraktPlugin implements LifecycleInterface, ConfigurableInterface
      *     path; multi-profile is a future extension.
      *
      * @return int Number of local history entries written (0 when not
-     *     configured/enabled or two-way sync is disabled).
+     *     configured/enabled, two-way sync is disabled, or the credential
+     *     could not be made usable).
      *
      * @since 1.4.0
      */
@@ -371,7 +375,7 @@ class TraktPlugin implements LifecycleInterface, ConfigurableInterface
             return 0;
         }
 
-        return $this->makeHistorySync()->syncTraktToPhlix($profileId);
+        return $this->pullHistoryWithAuthRecovery($profileId);
     }
 
     /**
@@ -1478,7 +1482,11 @@ class TraktPlugin implements LifecycleInterface, ConfigurableInterface
      * the scrobble handlers and {@see self::syncHistoryFromTrakt()}), so
      * turning the master off stops every subsequent tick even when the timer
      * was armed while it was on. Catches all exceptions so a failed sync
-     * does not crash the worker.
+     * does not crash the worker. The pull runs through
+     * {@see self::pullHistoryWithAuthRecovery()}, so a tick rotates an expired
+     * token before hitting the API — historically the tick never refreshed at
+     * all and a dead credential meant silent sync death (review
+     * trakt__secaudit Major-2 / trakt__srphp M6).
      *
      * @return void
      */
@@ -1500,11 +1508,69 @@ class TraktPlugin implements LifecycleInterface, ConfigurableInterface
 
         try {
             // Use the default profile for now (per-profile sync is future work).
-            $this->makeHistorySync()->syncTraktToPhlix(self::DEFAULT_PROFILE_ID);
+            $this->pullHistoryWithAuthRecovery(self::DEFAULT_PROFILE_ID);
         } catch (\Throwable $e) {
             $this->logger?->warning('Trakt periodic sync failed', [
                 'error' => $e->getMessage(),
             ]);
+        }
+    }
+
+    /**
+     * Execute one Trakt→Phlix pull with the full credential lifecycle.
+     *
+     * Single source for BOTH pull entries ({@see self::syncHistoryFromTrakt()}
+     * and the timer tick {@see self::runScheduledSync()}), following the same
+     * cannot-drift law as {@see self::makeHistorySync()}. Historically neither
+     * entry refreshed the access token at all: once Trakt's long-lived token
+     * expired, pulls kept dialing with the dead credential while the 401 fell
+     * into the sync layer's blanket TraktApiException catch — one generic
+     * warning per tick, permanent silent sync death until manual re-auth
+     * (review trakt__secaudit Major-2 / trakt__srphp M6).
+     *
+     *  1. Proactive: {@see self::ensureFreshToken()} rotates an expired pair
+     *     through the B4 single-flight gate (cheap no-op while fresh). If it
+     *     cannot, the tick is skipped rather than grinding the API with a
+     *     credential already known dead.
+     *  2. Reactive: a 401 raised INSIDE the pull (server-side revocation the
+     *     local clock cannot know) triggers exactly one gated
+     *     {@see self::refreshAfterAuthFailure()} followed by exactly one
+     *     re-pull — never a retry loop; a still-dead credential returns 0 and
+     *     the next tick re-tries on cadence.
+     *
+     * @param string $profileId Profile to reconcile history into.
+     *
+     * @return int Number of local history entries written.
+     */
+    private function pullHistoryWithAuthRecovery(string $profileId): int
+    {
+        if (!$this->ensureFreshToken()) {
+            $this->logger?->warning(
+                'Trakt: history pull skipped; expired access token and failed refresh'
+                . ' (manual re-authorization required)'
+            );
+
+            return 0;
+        }
+
+        try {
+            return $this->makeHistorySync()->syncTraktToPhlix($profileId);
+        } catch (TraktAuthenticationException $e) {
+            // One gated refresh, then exactly one re-pull (see docblock).
+            if (!$this->refreshAfterAuthFailure($e, 'history pull')) {
+                return 0;
+            }
+
+            try {
+                return $this->makeHistorySync()->syncTraktToPhlix($profileId);
+            } catch (TraktAuthenticationException $retryAuth) {
+                $this->logger?->error(
+                    'Trakt: history pull still unauthorized after refresh; manual re-authorization required',
+                    ['error' => $retryAuth->getMessage()],
+                );
+
+                return 0;
+            }
         }
     }
 

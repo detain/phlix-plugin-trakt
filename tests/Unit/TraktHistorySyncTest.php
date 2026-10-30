@@ -6,6 +6,8 @@ namespace Phlix\Tests\Unit\Plugins\Scrobbler\Trakt;
 
 use Phlix\Auth\WatchHistory;
 use Phlix\Plugins\Scrobbler\Trakt\TraktApi;
+use Phlix\Plugins\Scrobbler\Trakt\TraktApiException;
+use Phlix\Plugins\Scrobbler\Trakt\TraktAuthenticationException;
 use Phlix\Plugins\Scrobbler\Trakt\TraktHistorySync;
 use Phlix\Plugins\Scrobbler\Trakt\TraktSettings;
 use PHPUnit\Framework\TestCase;
@@ -767,6 +769,66 @@ final class TraktHistorySyncTest extends TestCase
             $this->invokeFindMediaItemId($sync2, $showEntry),
             'show-level entries have no local analogue and are skipped by design',
         );
+    }
+
+    /**
+     * A 401 surfacing from inside the pull is NOT a transient blip: the sync
+     * method must rethrow it so the plugin's pull entries can run "one gated
+     * refresh then one re-pull" (review trakt__secaudit Major-2 — the blanket
+     * parent catch turned permanent auth death into one generic warning line).
+     */
+    public function testSyncTraktToPhlixRethrowsAuthenticationFailure(): void
+    {
+        $api = $this->createMock(TraktApi::class);
+        $api->method('getWatchedHistory')->willThrowException(
+            new TraktAuthenticationException('Unauthorized', 401),
+        );
+
+        $sync = new TraktHistorySync(
+            $api,
+            $this->createMock(WatchHistory::class),
+            new TraktSettings(
+                accessToken: 'test-access',
+                refreshToken: 'test-refresh',
+                username: 'testuser',
+                syncEnabled: true,
+            ),
+            $this->createMock(Connection::class),
+            new NullLogger(),
+        );
+
+        $this->expectException(TraktAuthenticationException::class);
+        $sync->syncTraktToPhlix('profile-1');
+    }
+
+    /**
+     * Transient (non-auth) API failures keep the shipped behavior: warn and
+     * return 0 — no writes are attempted (the fetch aborts first).
+     */
+    public function testSyncTraktToPhlixSwallowsTransientApiFailureAndReturnsZero(): void
+    {
+        $api = $this->createMock(TraktApi::class);
+        $api->method('getWatchedHistory')->willThrowException(
+            new TraktApiException('boom', 500),
+        );
+
+        $watchHistory = $this->createMock(WatchHistory::class);
+        $watchHistory->expects($this->never())->method('updateProgress');
+
+        $sync = new TraktHistorySync(
+            $api,
+            $watchHistory,
+            new TraktSettings(
+                accessToken: 'test-access',
+                refreshToken: 'test-refresh',
+                username: 'testuser',
+                syncEnabled: true,
+            ),
+            $this->createMock(Connection::class),
+            new NullLogger(),
+        );
+
+        $this->assertSame(0, $sync->syncTraktToPhlix('profile-1'));
     }
 }
 
