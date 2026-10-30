@@ -73,7 +73,7 @@ final class TraktScrobbleTimerOneShotTest extends TestCase
                 'scrobbleStartCalls',
             ],
             [
-                new PlaybackStopped('sess-1', 'user-1', 'mi-1', 'dev-1', 10_000_000, false),
+                new PlaybackStopped('sess-1', 'user-1', 'mi-1', 'dev-1', 1000 * \Phlix\Auth\WatchHistory::TICKS_PER_SECOND, false),
                 'onPlaybackStopped',
                 'scrobbleStopCalls',
             ],
@@ -149,7 +149,7 @@ final class TraktScrobbleTimerOneShotTest extends TestCase
         $this->assertSame(0, $api->scrobbleStartCalls, 'arming the recurring timer must not scrobble');
 
         $plugin->onPlaybackStarted(new PlaybackStarted('sess-1', 'user-1', 'mi-1', 'dev-1', 0));
-        $plugin->onPlaybackStopped(new PlaybackStopped('sess-1', 'user-1', 'mi-1', 'dev-1', 10_000_000, false));
+        $plugin->onPlaybackStopped(new PlaybackStopped('sess-1', 'user-1', 'mi-1', 'dev-1', 1000 * \Phlix\Auth\WatchHistory::TICKS_PER_SECOND, false));
 
         $recurringAfter = array_values(array_filter(Timer::$arms, static fn(array $arm): bool => $arm['persistent']));
         $this->assertCount(1, $recurringAfter, 'playback events must not install persistent timers');

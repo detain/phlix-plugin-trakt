@@ -927,10 +927,10 @@ final class TraktPluginTest extends TestCase
 
         \Swoole\Coroutine\run(static function () use ($plugin): void {
             \Swoole\Coroutine\go(static function () use ($plugin): void {
-                $plugin->onPlaybackStopped(new PlaybackStopped('sess-a', 'user-1', 'mi-1', 'dev-1', 10_000_000, false));
+                $plugin->onPlaybackStopped(new PlaybackStopped('sess-a', 'user-1', 'mi-1', 'dev-1', 1000 * \Phlix\Auth\WatchHistory::TICKS_PER_SECOND, false));
             });
             \Swoole\Coroutine\go(static function () use ($plugin): void {
-                $plugin->onPlaybackStopped(new PlaybackStopped('sess-b', 'user-1', 'mi-1', 'dev-1', 10_000_000, false));
+                $plugin->onPlaybackStopped(new PlaybackStopped('sess-b', 'user-1', 'mi-1', 'dev-1', 1000 * \Phlix\Auth\WatchHistory::TICKS_PER_SECOND, false));
             });
         });
 
@@ -1080,7 +1080,7 @@ final class TraktPluginTest extends TestCase
             userId: 'user-1',
             mediaItemId: 'mi-1',
             deviceId: 'dev-1',
-            positionTicks: 100 * 10_000_000,
+            positionTicks: 100 * \Phlix\Auth\WatchHistory::TICKS_PER_SECOND,
         ));
 
         $this->assertSame(1, $api->scrobbleStartCalls);
@@ -1110,7 +1110,7 @@ final class TraktPluginTest extends TestCase
             userId: 'user-1',
             mediaItemId: 'mi-1',
             deviceId: 'dev-1',
-            finalPositionTicks: 500 * 10_000_000,
+            finalPositionTicks: 500 * \Phlix\Auth\WatchHistory::TICKS_PER_SECOND,
             reachedEnd: false,
         ));
 
@@ -1139,7 +1139,7 @@ final class TraktPluginTest extends TestCase
             userId: 'user-1',
             mediaItemId: 'mi-1',
             deviceId: 'dev-1',
-            positionTicks: 90 * 10_000_000,
+            positionTicks: 90 * \Phlix\Auth\WatchHistory::TICKS_PER_SECOND,
         ));
 
         $this->assertSame(1, $api->scrobblePauseCalls);
@@ -1495,7 +1495,7 @@ final class TraktPluginTest extends TestCase
             userId: 'user-1',
             mediaItemId: 'mi-1',
             deviceId: 'dev-1',
-            finalPositionTicks: 10_000_000,
+            finalPositionTicks: 1000 * \Phlix\Auth\WatchHistory::TICKS_PER_SECOND,
             reachedEnd: false,
         );
     }
@@ -1733,7 +1733,7 @@ final class ReentrantAuth401Api extends TraktApi
                 'user-1',
                 'mi-1',
                 'dev-1',
-                10_000_000,
+                1000 * \Phlix\Auth\WatchHistory::TICKS_PER_SECOND,
                 false,
             ));
             if ($this->refreshCalls > $callsBefore) {

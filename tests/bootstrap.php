@@ -45,7 +45,15 @@ if (!class_exists(\Phlix\Auth\WatchHistory::class)) {
         public const STATUS_PLAYING = 'playing';
         public const STATUS_COMPLETED = 'completed';
         public const STATUS_IN_PROGRESS = 'in_progress';
-        public const TICKS_PER_SECOND = 10_000_000;
+        // Mirrors the HOST's arithmetic constant (phlix-server
+        // src/Auth/WatchHistory.php `public const TICKS_PER_SECOND = 10000`),
+        // which every tick computation in this plugin resolves through
+        // WatchHistory::TICKS_PER_SECOND. The old fixture value 10_000_000
+        // matched only the host's PROSE docblock ("100-nanosecond intervals"),
+        // which contradicts the host's own /10000 math (reported upstream as a
+        // server-side ticket, review trakt__srphp M7). The plugin follows the
+        // host's numbers: where the host does the division, its constant wins.
+        public const TICKS_PER_SECOND = 10000;
 
         public function getForMediaItem(string $profileId, string $mediaItemId): ?array
         {

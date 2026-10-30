@@ -577,8 +577,11 @@ final class TraktHistorySyncTest extends TestCase
 
         $result = $method->invoke($sync, ['runtime' => 120]);
 
-        // 120 seconds * 10_000_000 ticks per second = 1_200_000_000
-        $this->assertSame(1_200_000_000, $result);
+        // 120 seconds on the host's arithmetic tick scale — the SAME constant
+        // extractDurationTicks multiplies by (review trakt__srphp M7: the old
+        // 1_200_000_000 literal baked in the 100-ns scale the test stub
+        // fabricated and the host never used).
+        $this->assertSame(120 * WatchHistory::TICKS_PER_SECOND, $result);
     }
 
     public function testExtractDurationTicksFromMovieObject(): void
@@ -594,8 +597,8 @@ final class TraktHistorySyncTest extends TestCase
             'movie' => ['runtime' => 90],
         ]);
 
-        // 90 seconds * 10_000_000 = 900_000_000
-        $this->assertSame(900_000_000, $result);
+        // 90 seconds on the host's arithmetic tick scale (M7 re-pin).
+        $this->assertSame(90 * WatchHistory::TICKS_PER_SECOND, $result);
     }
 
     public function testExtractDurationTicksFromEpisodeObject(): void
@@ -611,8 +614,8 @@ final class TraktHistorySyncTest extends TestCase
             'episode' => ['runtime' => 45],
         ]);
 
-        // 45 seconds * 10_000_000 = 450_000_000
-        $this->assertSame(450_000_000, $result);
+        // 45 seconds on the host's arithmetic tick scale (M7 re-pin).
+        $this->assertSame(45 * WatchHistory::TICKS_PER_SECOND, $result);
     }
 
     public function testExtractDurationTicksReturnsZeroWhenUnknown(): void

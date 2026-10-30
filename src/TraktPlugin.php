@@ -1328,7 +1328,12 @@ class TraktPlugin implements LifecycleInterface, ConfigurableInterface
      * 0.0 (a safe, in-range value) rather than a bogus seconds figure.
      *
      * @param MediaItem $item Media item being scrobbled.
-     * @param int $positionTicks Playback position in 100-ns ticks.
+     * @param int $positionTicks Playback position in the host's tick domain
+     *     (seconds x {@see WatchHistory::TICKS_PER_SECOND} — the same constant
+     *     every other tick computation in this plugin reads, review
+     *     trakt__srphp M7: the historic 10_000_000 literal disagreed with the
+     *     host's arithmetic scale and only matched because the test fixture
+     *     fabricated the 100-ns value).
      *
      * @return float Progress percentage clamped to [0, 100], rounded to 2dp.
      */
@@ -1339,7 +1344,7 @@ class TraktPlugin implements LifecycleInterface, ConfigurableInterface
             return 0.0;
         }
 
-        $positionSeconds = $positionTicks / 10_000_000;
+        $positionSeconds = $positionTicks / WatchHistory::TICKS_PER_SECOND;
         $percent = $positionSeconds / $durationSeconds * 100;
 
         if ($percent < 0.0) {
