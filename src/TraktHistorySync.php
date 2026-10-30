@@ -12,8 +12,9 @@ use Psr\Log\NullLogger;
 /**
  * Handles two-way watch history sync between Trakt and Phlix.
  *
- * - Trakt → Phlix: Pulls Trakt watched history on schedule and writes
- *   new entries to local WatchHistory for items not yet at ≥ 90% complete.
+ * - Trakt → Phlix: Pulls Trakt watched history on schedule and writes local
+ *   WatchHistory rows: new items, plus existing sub-threshold items, which
+ *   are overwritten with a completed row (existing ≥ 90% rows are kept).
  * - Phlix → Trakt: Pushes local WatchHistory entries (≥ 90%) to Trakt
  *   after PlaybackStopped events where completion threshold was met.
  *
@@ -48,7 +49,14 @@ class TraktHistorySync
      * local WatchHistory entries. For items watched on Trakt but not yet
      * ≥ 90% complete in Phlix, writes a local entry.
      *
-     * Uses last-write-wins based on watchedAt timestamp.
+     * Conflict policy is what this method actually implements — there is no
+     * timestamp comparison: a local entry already at ≥ 90% completion always
+     * wins (skipped); a local entry below that threshold is overwritten
+     * unconditionally with a completed Trakt row regardless of when either
+     * side was watched. The parsed `watchedAt` is log context only.
+     * (A true "last-write-wins by watchedAt" merge is NOT implemented;
+     * shipping one would be a behavior change, not a correction of this
+     * prose.)
      *
      * @param string $profileId Profile ID to sync history for
      *
