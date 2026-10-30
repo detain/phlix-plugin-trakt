@@ -327,11 +327,12 @@ class TraktHistorySync
             return null;
         }
 
-        // Early exit for pre-resolved ID (test seam)
-        if (isset($item['_resolved_media_item_id']) && is_string($item['_resolved_media_item_id'])) {
-            return $item['_resolved_media_item_id'];
-        }
-
+        // No payload-driven shortcuts: resolution goes through the external-id
+        // lookup ONLY. A pre-seeded '_resolved_media_item_id' key is ignored —
+        // it used to be a test seam consulted on the path that parses
+        // UNTRUSTED Trakt API responses, so a payload carrying that key could
+        // force history writes against an arbitrary local media item id
+        // (review trakt__srphp m14). Tests steer the DB double instead.
         return $this->findMediaItemIdByExternalIds($ids);
     }
 

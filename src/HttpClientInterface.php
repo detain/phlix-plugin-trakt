@@ -19,7 +19,8 @@ interface HttpClientInterface
      * @param array<string, mixed> $params Query parameters
      * @param array<string, string> $headers Additional headers
      *
-     * @return array<string, mixed> Decoded JSON response
+     * @return array<mixed> Decoded JSON body — object endpoints yield string
+     *         keys, list endpoints integer keys; callers narrow per endpoint
      *
      * @throws TraktApiException On HTTP error
      * @throws TraktAuthenticationException On 401 Unauthorized
@@ -33,7 +34,8 @@ interface HttpClientInterface
      * @param array<string, mixed> $data JSON-serializable body data
      * @param array<string, string> $headers Additional headers
      *
-     * @return array<string, mixed> Decoded JSON response
+     * @return array<mixed> Decoded JSON body — object endpoints yield string
+     *         keys, list endpoints integer keys; callers narrow per endpoint
      *
      * @throws TraktApiException On HTTP error
      * @throws TraktAuthenticationException On 401 Unauthorized

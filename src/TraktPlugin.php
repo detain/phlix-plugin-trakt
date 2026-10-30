@@ -95,6 +95,16 @@ class TraktPlugin implements LifecycleInterface, ConfigurableInterface
     private ?TokenCipher $tokenCipher = null;
 
     /**
+     * Id of the periodic Trakt→Phlix pull timer armed by onEnable().
+     *
+     * The plugin keeps exactly one live periodic timer; onDisable() cancels
+     * it and a re-enable must not stack a second one (review trakt__srphp
+     * m14: the id used to be discarded, so a disable/enable cycle doubled
+     * the pull load and a disabled plugin kept pulling).
+     */
+    private ?int $periodicSyncTimerId = null;
+
+    /**
      * Single-flight gate around the OAuth refresh (step B4).
      *
      * Trakt ROTATES the refresh token on every `/oauth/token` exchange, so two
@@ -319,6 +329,7 @@ class TraktPlugin implements LifecycleInterface, ConfigurableInterface
      */
     public function onDisable(): void
     {
+        $this->cancelPeriodicSyncTimer();
         $this->itemRepository = null;
         $this->watchHistory = null;
     }
@@ -1470,13 +1481,41 @@ class TraktPlugin implements LifecycleInterface, ConfigurableInterface
             return;
         }
 
+        $this->cancelPeriodicSyncTimer();
+
         try {
-            \Workerman\Timer::add($this->syncIntervalSeconds(), function (): void {
+            $this->periodicSyncTimerId = \Workerman\Timer::add($this->syncIntervalSeconds(), function (): void {
                 $this->runScheduledSync();
             });
         } catch (\Throwable) {
             // Timer not available outside Workerman process (unit tests, CLI)
+            $this->periodicSyncTimerId = null;
         }
+    }
+
+    /**
+     * Cancel the periodic pull timer if one is live, clearing its id.
+     *
+     * Shared by re-arm (onEnable→schedulePeriodicSync must never stack a
+     * second timer on top of a live one) and onDisable (a disabled plugin
+     * must stop pulling entirely). Best-effort loud-free: outside a
+     * Workerman environment there is no timer registry to cancel.
+     *
+     * @return void
+     */
+    private function cancelPeriodicSyncTimer(): void
+    {
+        if ($this->periodicSyncTimerId === null) {
+            return;
+        }
+
+        try {
+            \Workerman\Timer::del($this->periodicSyncTimerId);
+        } catch (\Throwable) {
+            // Nothing to cancel outside a Workerman process.
+        }
+
+        $this->periodicSyncTimerId = null;
     }
 
     /**

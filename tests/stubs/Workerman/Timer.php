@@ -35,6 +35,13 @@ class Timer
     public static array $arms = [];
 
     /**
+     * Every cancel (del) made since the last reset().
+     *
+     * @var list<int>
+     */
+    public static array $cancels = [];
+
+    /**
      * Add a timer — mirrors `Workerman\Timer::add()` (upstream src/Timer.php).
      *
      * @param float $timeInterval Seconds between/after firing; 0 means "next tick"
@@ -56,12 +63,29 @@ class Timer
     }
 
     /**
-     * Discard recorded arms (call from test setUp).
+     * Cancel a timer — mirrors `Workerman\Timer::del()`.
+     *
+     * Recorded so tests can pin that the plugin relinquishes what it armed
+     * (the periodic pull timer must die with onDisable(), review
+     * trakt__srphp m14).
+     *
+     * @param int $timerId Id previously returned by add()
+     *
+     * @return void
+     */
+    public static function del(int $timerId): void
+    {
+        self::$cancels[] = $timerId;
+    }
+
+    /**
+     * Discard recorded arms and cancels (call from test setUp).
      *
      * @return void
      */
     public static function reset(): void
     {
         self::$arms = [];
+        self::$cancels = [];
     }
 }

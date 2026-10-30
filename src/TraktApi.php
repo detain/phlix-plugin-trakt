@@ -305,28 +305,22 @@ class TraktApi
             $payload['episode'] = $episode;
         }
 
-        try {
-            $response = $this->http->post(
-                self::BASE_URL . '/scrobble/' . $action,
-                $payload,
-                $this->apiHeaders($accessToken)
-            );
+        $response = $this->http->post(
+            self::BASE_URL . '/scrobble/' . $action,
+            $payload,
+            $this->apiHeaders($accessToken)
+        );
 
-            $this->logger->debug('Trakt scrobble response', [
-                'action' => $action,
-                'item' => $item->name,
-                'response' => $response,
-            ]);
+        $this->logger->debug('Trakt scrobble response', [
+            'action' => $action,
+            'item' => $item->name,
+            'response' => $response,
+        ]);
 
-            return [
-                'action' => is_string($response['action'] ?? null) ? $response['action'] : $action,
-                'watched_at' => is_string($response['watched_at'] ?? null) ? $response['watched_at'] : date('c'),
-            ];
-        } catch (TraktAuthenticationException $e) {
-            throw $e;
-        } catch (TraktApiException $e) {
-            throw $e;
-        }
+        return [
+            'action' => is_string($response['action'] ?? null) ? $response['action'] : $action,
+            'watched_at' => is_string($response['watched_at'] ?? null) ? $response['watched_at'] : date('c'),
+        ];
     }
 
     /**

@@ -163,10 +163,17 @@ final class TraktHistorySyncTest extends TestCase
         $this->assertSame('imdb-media-item', $result);
     }
 
-    public function testFindMediaItemIdUsesPreResolvedIdWhenPresent(): void
+    /**
+     * Law pin (review trakt__srphp m14): the '_resolved_media_item_id' test
+     * seam is gone — untrusted Trakt payload data can no longer steer local
+     * item resolution. The injected key is ignored and the external-id
+     * lookup runs, so the DB-resolved id wins over anything the payload
+     * tries to pre-seed.
+     */
+    public function testInjectedResolvedIdKeyInPayloadIsIgnored(): void
     {
         $db = new TraktHistorySyncTestDbDouble();
-        $db->setResults([]);
+        $db->setResults([['id' => 'db-resolved-item']]);
         $sync = $this->createSync($db);
 
         $item = [
@@ -176,13 +183,13 @@ final class TraktHistorySyncTest extends TestCase
                     'tmdb' => 123,
                 ],
             ],
-            '_resolved_media_item_id' => 'pre-resolved-uuid',
+            '_resolved_media_item_id' => 'attacker-chosen-uuid',
         ];
 
         $result = $this->invokeFindMediaItemId($sync, $item);
 
-        $this->assertSame('pre-resolved-uuid', $result);
-        $this->assertCount(0, $db->getCalls());
+        $this->assertSame('db-resolved-item', $result);
+        $this->assertNotEmpty($db->getCalls(), 'resolution must go through the DB lookup, not the payload key');
     }
 
     public function testFindMediaItemIdHandlesEpisodeIds(): void

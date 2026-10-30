@@ -55,7 +55,9 @@ class HttpClient implements HttpClientInterface
      * @param array<string, mixed> $data Request body
      * @param array<string, string> $headers Additional headers
      *
-     * @return array<string, mixed>
+     * @return array<mixed> Decoded JSON body — object endpoints yield
+     *             string keys, list endpoints integer keys; callers narrow per
+     *             endpoint.
      *
      * @throws TraktApiException
      * @throws TraktAuthenticationException
@@ -109,7 +111,9 @@ class HttpClient implements HttpClientInterface
      * @param array<string, mixed> $data Request body (JSON-encoded for POST)
      * @param array<string, string> $headers Header map
      *
-     * @return array<string, mixed>
+     * @return array<mixed> Decoded JSON body — object endpoints yield
+     *             string keys, list endpoints integer keys; callers narrow per
+     *             endpoint.
      *
      * @throws TraktApiException
      * @throws TraktAuthenticationException
@@ -191,7 +195,9 @@ class HttpClient implements HttpClientInterface
      * @param array<string, mixed> $data Request body
      * @param array<string, string> $headers Header map
      *
-     * @return array<string, mixed>
+     * @return array<mixed> Decoded JSON body — object endpoints yield
+     *             string keys, list endpoints integer keys; callers narrow per
+     *             endpoint.
      *
      * @throws TraktApiException
      * @throws TraktAuthenticationException
@@ -272,7 +278,9 @@ class HttpClient implements HttpClientInterface
      *        transport passes through what the client's getHeaders() returns
      *        (repeated headers may be arrays — the first element is used).
      *
-     * @return array<string, mixed>
+     * @return array<mixed> Decoded JSON body — object endpoints yield
+     *             string keys, list endpoints integer keys; callers narrow per
+     *             endpoint.
      *
      * @throws TraktApiException
      * @throws TraktAuthenticationException
@@ -312,7 +320,6 @@ class HttpClient implements HttpClientInterface
 
         $decoded = json_decode($raw, true);
 
-        /** @var array<string, mixed> */
         return is_array($decoded) ? $decoded : [];
     }
 

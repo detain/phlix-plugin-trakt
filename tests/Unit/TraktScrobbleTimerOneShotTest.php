@@ -178,7 +178,16 @@ final class TraktScrobbleTimerOneShotTest extends TestCase
 
         $this->assertCount(2, $callSites, 'expected exactly the one-shot scrobble arm and the periodic pull arm');
         $this->assertContains('\Workerman\Timer::add(0, $task, [], false);', $callSites);
-        $this->assertContains('\Workerman\Timer::add($this->syncIntervalSeconds(), function (): void {', $callSites);
+        // The periodic arm is captured into $this->periodicSyncTimerId so
+        // onDisable/re-arm can cancel it (review trakt__srphp m14) — match on
+        // the call fragment, not the whole assignment line.
+        $this->assertStringContainsString(
+            '\Workerman\Timer::add($this->syncIntervalSeconds()',
+            implode("\n", $callSites),
+            'the periodic pull arm must live in schedulePeriodicSync()'
+        );
+        $srcHasIdCapture = str_contains($src, '$this->periodicSyncTimerId = \Workerman\Timer::add(');
+        $this->assertTrue($srcHasIdCapture, 'the periodic arm must store its timer id for cancellation');
 
         foreach ($callSites as $line) {
             if (preg_match('/Timer::add\(\s*0\s*,/', $line) !== 1) {
@@ -192,6 +201,36 @@ final class TraktScrobbleTimerOneShotTest extends TestCase
                 . '0ms loop — the scrobble-spammer defect (review trakt__srphp C3)'
             );
         }
+    }
+
+    /**
+     * CONSEQUENCE (review trakt__srphp m14): onDisable() must cancel the
+     * periodic pull timer it armed, and arm-on-top-of-live must relinquish
+     * the old one first. Historically the id was discarded at arm time: a
+     * disabled plugin kept pulling forever and each enable cycle stacked
+     * another recurring timer (doubling pull load every time).
+     */
+    public function testDisableCancelsPeriodicTimerAndReEnableDoesNotStack(): void
+    {
+        $plugin = $this->wiredPlugin(new FakeTraktApi());
+
+        $this->assertCount(1, Timer::$arms, 'fresh enable arms only the recurring pull');
+        $this->assertTrue(Timer::$arms[0]['persistent']);
+
+        $plugin->onDisable();
+        $this->assertSame([1], Timer::$cancels, 'onDisable must cancel the periodic timer it armed');
+
+        // Enable again after a real disable: fresh arm, nothing to cancel.
+        $plugin->onEnable($this->stubContainer());
+        $this->assertSame([1], Timer::$cancels, 'a post-disable enable adds its own timer without cancelling it');
+
+        // Enable on top of a live timer: the re-arm law is cancel-then-arm,
+        // never stack — exactly one recurring pull stays live.
+        $plugin->onEnable($this->stubContainer());
+        $this->assertSame([1, 2], Timer::$cancels, 're-arm on top of a live timer must cancel the superseded id');
+        $this->assertCount(3, Timer::$arms);
+        $livePersistent = 3 - count(Timer::$cancels);
+        $this->assertSame(1, $livePersistent, 'exactly one live periodic timer across the whole cycle');
     }
 
     /**
@@ -216,13 +255,17 @@ final class TraktScrobbleTimerOneShotTest extends TestCase
         $plugin = new TraktPlugin($settings, new NullLogger(), $api);
         $plugin->configure(array_merge($settings->toArray(), ['enabled' => $masterOn]));
 
-        $container = new StubContainer([
+        $plugin->onEnable($this->stubContainer());
+
+        return $plugin;
+    }
+
+    private function stubContainer(): StubContainer
+    {
+        return new StubContainer([
             \Phlix\Media\Library\ItemRepository::class => new FakeItemRepository(),
             \Phlix\Auth\WatchHistory::class => null,
         ]);
-        $plugin->onEnable($container);
-
-        return $plugin;
     }
 
     /**
