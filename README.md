@@ -54,6 +54,16 @@ php bin/phlix plugin:install https://github.com/detain/phlix-plugin-trakt
 > application at <https://app.trakt.tv/settings/apps/api/new> only if you self-host your own
 > Trakt credentials.
 
+> **Self-host credentials are configured host-side, not in this table.** Your
+> app's `client_id` / `client_secret` / `redirect_uri` live on the Phlix
+> **server**, which supplies them to the plugin at runtime: set the
+> `TRAKT_CLIENT_ID`, `TRAKT_CLIENT_SECRET` and `TRAKT_REDIRECT_URI`
+> environment variables, or enter them in the admin Settings page — the
+> `trakt.client_id` / `trakt.client_secret` / `trakt.redirect_uri` keys
+> there take precedence. The server's `config/scrobblers/trakt.php`
+> documents that layer, and its `token_encryption_key` is what the plugin
+> uses to encrypt OAuth tokens at rest.
+
 ## Development
 
 ```bash
@@ -64,10 +74,13 @@ php scripts/security-audit-check.php     # audit composer.lock (runtime + dev)
 ```
 
 The entry class is `Phlix\Plugins\Scrobbler\Trakt\TraktPlugin` (implements
-`Phlix\Shared\Plugin\LifecycleInterface`). It runs inside a Phlix server host,
-which provides the playback/library services at runtime. Host-supplied classes
-(`Phlix\Auth\WatchHistory`, `Phlix\Common\Uuid`, `Workerman\MySQL\Connection`,
-`Workerman\Worker`, `Workerman\Http\Client`) are stubbed from
+`Phlix\Shared\Plugin\LifecycleInterface` and
+`Phlix\Shared\Plugin\ConfigurableInterface`). It runs inside a Phlix server
+host, which provides the playback/library services at runtime. Host-supplied
+classes (`Phlix\Auth\WatchHistory`, `Phlix\Common\Uuid`,
+`Phlix\Media\Library\MediaItem`, `Phlix\Admin\SettingsRepository`,
+`Workerman\MySQL\Connection`, `Workerman\Worker`, `Workerman\Http\Client`,
+`Workerman\Http\Response`, `Workerman\Timer`) are stubbed from
 `tests/bootstrap.php` so the unit suite runs standalone. `phpunit.xml` sets the
 default suite to `Unit` and excludes `tests/Network/HttpClientNetworkTest.php`,
 which talks to a third-party service.
