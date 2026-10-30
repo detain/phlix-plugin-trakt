@@ -154,10 +154,58 @@ final class TraktPortedClassesTest extends TestCase
         $verifier = $store->consume('state-123');
 
         $this->assertSame('verifier-abc', $verifier);
-        // Verify cleanup DELETE was called (3rd call)
+        // Verify cleanup DELETE was called (3rd call) — and that it is
+        // PROVIDER-SCOPED (review trakt__secaudit #5): the oauth_state_store
+        // table is shared with OIDC/GitHub/WebAuthn flows and the trakt
+        // sweep must never touch their rows.
         $calls = $db->getCalls();
         $this->assertCount(3, $calls);
-        $this->assertStringContainsString('DELETE FROM oauth_state_store WHERE expires_at', $calls[2]['sql']);
+        $this->assertStringContainsString('DELETE FROM oauth_state_store WHERE provider = ? AND expires_at', $calls[2]['sql']);
+        $this->assertSame(['trakt', 100], $calls[2]['params']);
+    }
+
+    /**
+     * Law pin (review trakt__secaudit #5 / trakt__srphp m13): the one-shot
+     * consume must take a row lock (FOR UPDATE — the estate B2 idiom). A
+     * plain SELECT inside the transaction lets two concurrent callbacks on
+     * different workers each read the row from their own snapshot and both
+     * receive the code verifier; the FOR UPDATE arm makes the second writer
+     * wait, and the committed delete then comes back empty.
+     */
+    public function testDbStoreConsumeSelectsUnderRowLock(): void
+    {
+        $db = new TestableConnection();
+        $db->setResults([[], [], []]);
+        $store = new DbTraktOAuthStateStore($db);
+
+        $this->assertNull($store->consume('state-never-issued'));
+
+        $calls = $db->getCalls();
+        $this->assertStringContainsString('SELECT data FROM oauth_state_store', $calls[0]['sql']);
+        $this->assertStringContainsString('FOR UPDATE', $calls[0]['sql']);
+    }
+
+    /**
+     * Law pin (review trakt__srphp m13 tail): a failing cleanup DELETE may
+     * not silently regrow the table — it must log. The consume() verdict is
+     * already decided at that point, so the failure stays non-fatal.
+     */
+    public function testDbStoreCleanupFailureIsLoggedLoudly(): void
+    {
+        $db = new TestableConnection();
+        // SELECT row, consume DELETE ok, cleanup DELETE FAILS.
+        $db->setResults([
+            [['data' => json_encode(['code_verifier' => 'verifier-abc'])]],
+            [],
+            false,
+        ]);
+
+        $logger = $this->createMock(\Psr\Log\LoggerInterface::class);
+        $logger->expects($this->once())->method('warning')->with($this->stringContains('cleanup'));
+
+        $store = new DbTraktOAuthStateStore($db, 600, $logger);
+
+        $this->assertSame('verifier-abc', $store->consume('state-123'));
     }
 
     public function testDbStoreConsumeWithEmptyCodeVerifierReturnsNull(): void

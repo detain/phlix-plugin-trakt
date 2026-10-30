@@ -32,12 +32,17 @@ class Connection
     /**
      * Execute a query and return results.
      *
+     * Upstream `Workerman\MySQL\Connection::query()` signals failure with
+     * `false` (production callers must keep working against that), so the
+     * stub returns `array|false` — the shape the code paths already branch
+     * on. The C1 lesson applies: never fabricate or elide seam behavior.
+     *
      * @param string $sql The SQL query
      * @param array<mixed> $params Query parameters
      *
-     * @return array<array<string, mixed>> Array of result rows
+     * @return array<array<string, mixed>>|false Array of result rows, or false on failure
      */
-    public function query(string $sql, array $params = []): array
+    public function query(string $sql, array $params = []): array|false
     {
         // Stub implementation - actual queries not executed in tests
         return [];
@@ -70,7 +75,7 @@ class Connection
  */
 class TestableConnection extends Connection
 {
-    /** @var array<array> */
+    /** @var array<array|false> */
     private array $resultsToReturn = [];
     private array $calls = [];
 
@@ -83,7 +88,9 @@ class TestableConnection extends Connection
     /**
      * Configure the results to return on subsequent query() calls.
      *
-     * @param array<array> $results Array of result sets, one per call
+     * A queued `false` models a failed statement (upstream contract).
+     *
+     * @param array<array|false> $results Array of result sets, one per call
      */
     public function setResults(array $results): void
     {
@@ -99,7 +106,7 @@ class TestableConnection extends Connection
         return $this->calls;
     }
 
-    public function query(string $sql, array $params = []): array
+    public function query(string $sql, array $params = []): array|false
     {
         $this->calls[] = ['sql' => $sql, 'params' => $params];
 

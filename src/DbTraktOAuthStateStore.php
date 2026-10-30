@@ -12,6 +12,8 @@ declare(strict_types=1);
 namespace Phlix\Plugins\Scrobbler\Trakt;
 
 use Phlix\Common\Uuid;
+use Psr\Log\LoggerInterface;
+use Psr\Log\NullLogger;
 use Workerman\MySQL\Connection;
 
 /**
@@ -47,17 +49,20 @@ final class DbTraktOAuthStateStore implements TraktOAuthStateStore
 
     private Connection $db;
     private int $ttlSeconds;
+    private LoggerInterface $logger;
 
     /**
      * Create a new DbTraktOAuthStateStore instance.
      *
      * @param Connection $db Workerman MySQL connection instance
      * @param int        $ttlSeconds Optional TTL in seconds (default: 600 = 10 minutes)
+     * @param LoggerInterface|null $logger Optional PSR-3 logger for loud cleanup failures
      */
-    public function __construct(Connection $db, int $ttlSeconds = self::TTL_SECONDS)
+    public function __construct(Connection $db, int $ttlSeconds = self::TTL_SECONDS, ?LoggerInterface $logger = null)
     {
         $this->db = $db;
         $this->ttlSeconds = $ttlSeconds > 0 ? $ttlSeconds : self::TTL_SECONDS;
+        $this->logger = $logger ?? new NullLogger();
     }
 
     /**
@@ -99,7 +104,9 @@ final class DbTraktOAuthStateStore implements TraktOAuthStateStore
      */
     public function consume(string $state): ?string
     {
-        // Atomic consume: SELECT within transaction, then DELETE
+        // Atomic consume: row-locked SELECT (FOR UPDATE) within the
+        // transaction, then DELETE — a second concurrent callback on the
+        // same state blocks on the lock and reads nothing after commit.
         $verifier = $this->fetchAndDelete($state);
         if ($verifier === null) {
             $this->cleanupExpiredEntries();
@@ -123,7 +130,7 @@ final class DbTraktOAuthStateStore implements TraktOAuthStateStore
         $this->db->beginTrans();
         try {
             $result = $this->db->query(
-                "SELECT data FROM oauth_state_store WHERE provider = ? AND state_value = ? AND expires_at > NOW()",
+                "SELECT data FROM oauth_state_store WHERE provider = ? AND state_value = ? AND expires_at > NOW() FOR UPDATE",
                 [self::PROVIDER, $state]
             );
 
@@ -166,16 +173,34 @@ final class DbTraktOAuthStateStore implements TraktOAuthStateStore
     }
 
     /**
-     * Delete expired entries in batches to prevent table bloat.
+     * Delete expired TRAKT entries in batches to prevent table bloat.
      *
      * Called after each {@see consume()} to lazily clean up stale entries.
      * This approach avoids adding overhead to every put() call.
+     *
+     * The sweep is provider-scoped: the oauth_state_store table is SHARED
+     * across every OAuth-flavoured plugin/host flow (OIDC, GitHub, WebAuthn
+     * all keep rows here), and a trakt callback has no business deleting
+     * other providers' state rows — cross-plugin write amplification is a
+     * separation violation of the unified-table contract. A failed sweep is
+     * logged loudly rather than silently regrowing the table; it never
+     * changes the consume() verdict, which is already decided.
      */
     private function cleanupExpiredEntries(): void
     {
-        $this->db->query(
-            "DELETE FROM oauth_state_store WHERE expires_at <= NOW() LIMIT ?",
-            [self::CLEANUP_BATCH_SIZE]
-        );
+        try {
+            $result = $this->db->query(
+                "DELETE FROM oauth_state_store WHERE provider = ? AND expires_at <= NOW() LIMIT ?",
+                [self::PROVIDER, self::CLEANUP_BATCH_SIZE]
+            );
+
+            if ($result === false) {
+                $this->logger->warning('Trakt OAuth state cleanup DELETE failed; expired trakt rows may accumulate');
+            }
+        } catch (\Throwable $e) {
+            $this->logger->warning('Trakt OAuth state cleanup raised; expired trakt rows may accumulate', [
+                'error' => $e->getMessage(),
+            ]);
+        }
     }
 }
