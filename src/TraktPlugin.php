@@ -321,7 +321,15 @@ class TraktPlugin implements LifecycleInterface, ConfigurableInterface
     }
 
     /**
-     * Release resources on disable.
+     * Stop background work on disable.
+     *
+     * Cancels the periodic-sync Workerman timer (the one resource this plugin
+     * arms) and drops the lazily-built repository collaborators. The
+     * constructor-injected services ({@see self::$api}, {@see self::$db},
+     * {@see self::$settings}, the token cipher and settings repository)
+     * intentionally SURVIVE: they are stateless per call and hold no
+     * per-enable resources, and the host may re-enable this instance without
+     * rebuilding it — dropping them would make re-enable fail.
      *
      * @return void
      *
@@ -1445,9 +1453,10 @@ class TraktPlugin implements LifecycleInterface, ConfigurableInterface
      * the hardcoded {@see self::SYNC_INTERVAL_SEC} constant, so changing the
      * setting in the admin UI did nothing. This makes it real.
      *
-     * Clamped to a one-minute floor: the value reaches us from admin input, and a
-     * zero or negative interval would arm a runaway timer inside a resident
-     * Workerman worker.
+     * Guarded against a runaway timer: the value reaches us from admin input,
+     * and a zero or negative (or sub-one-minute) interval is NOT clamped to a
+     * floor — it is substituted with the default {@see self::SYNC_INTERVAL_SEC},
+     * because a resident Workerman worker must never arm a near-zero tick.
      */
     private function syncIntervalSeconds(): int
     {
