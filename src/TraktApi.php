@@ -9,12 +9,16 @@ use Psr\Log\LoggerInterface;
 use Psr\Log\NullLogger;
 
 /**
- * Trakt.tv API v3 client implementing OAuth2 PKCE and scrobble methods.
+ * Trakt.tv API client (wire version `trakt-api-version: 2` — Trakt's current
+ * and only released API generation; see {@see self::apiHeaders()}).
  *
  * Trakt uses a 3-state scrobble protocol (start/pause/stop) that differs
  * from Last.fm's 2-state (start/stop). This client handles:
  * - OAuth2 PKCE authentication flow
- * - Automatic token refresh on 401 responses
+ * - Token refresh requests ({@see self::refreshAccessToken()}) — the 401
+ *   retry orchestration itself lives in the host plugin
+ *   ({@see TraktPlugin::refreshAfterAuthFailure()}); this client never
+ *   silently re-sends a failed request
  * - Scrobble start/pause/stop calls
  * - Watched history sync (pull and push)
  *
@@ -178,7 +182,10 @@ class TraktApi
      * @param float $progress Playback progress as a percentage (0-100)
      * @param string $accessToken OAuth access token
      *
-     * @return array<string, mixed> Scrobble response with action and watched_at
+     * @return array<string, mixed> Scrobble response with `action` and
+     *         `watched_at`; when the item carries no Trakt-resolvable external
+     *         ID no request is sent and the response additionally carries
+     *         `'skipped' => true`
      *
      * @throws TraktApiException|TraktAuthenticationException On API error or auth failure
      * @since 1.1.0
@@ -198,7 +205,10 @@ class TraktApi
      * @param float $progress Playback progress as a percentage (0-100)
      * @param string $accessToken OAuth access token
      *
-     * @return array<string, mixed> Scrobble response with action and watched_at
+     * @return array<string, mixed> Scrobble response with `action` and
+     *         `watched_at`; when the item carries no Trakt-resolvable external
+     *         ID no request is sent and the response additionally carries
+     *         `'skipped' => true`
      *
      * @throws TraktApiException|TraktAuthenticationException On API error or auth failure
      * @since 1.1.0
@@ -218,7 +228,10 @@ class TraktApi
      * @param float $progress Final playback progress as a percentage (0-100)
      * @param string $accessToken OAuth access token
      *
-     * @return array<string, mixed> Scrobble response with action and watched_at
+     * @return array<string, mixed> Scrobble response with `action` and
+     *         `watched_at`; when the item carries no Trakt-resolvable external
+     *         ID no request is sent and the response additionally carries
+     *         `'skipped' => true`
      *
      * @throws TraktApiException|TraktAuthenticationException On API error or auth failure
      * @since 1.1.0
@@ -236,7 +249,8 @@ class TraktApi
      * @param float $progress Playback progress as a percentage (0-100)
      * @param string $accessToken OAuth access token
      *
-     * @return array<string, mixed>
+     * @return array<string, mixed> Scrobble response (`action` + `watched_at`,
+     *         plus `'skipped' => true` on the no-external-ID path)
      *
      * @throws TraktApiException|TraktAuthenticationException
      */
