@@ -70,8 +70,16 @@ php bin/phlix plugin:install https://github.com/detain/phlix-plugin-trakt
 composer install
 vendor/bin/phpunit                       # default: deterministic Unit suite
 vendor/bin/phpunit --testsuite Network   # live httpbin round trips, on demand
+vendor/bin/phpstan analyse src --level=9 # CI static-analysis gate
+vendor/bin/phpcs src --standard=PSR12    # CI coding-standards gate
 php scripts/security-audit-check.php     # audit composer.lock (runtime + dev)
 ```
+
+These deterministic gates run in CI on PHP 8.3 and 8.4. The phpstan config
+(`phpstan.neon`) carries ten broad `ignoreErrors` families — every
+"unknown class"/"invalid type" shape, silenced because the host classes they
+refer to are not available in plugin scope. The plugin's own typed code is
+analysed at level 9 with no per-line suppressions.
 
 The entry class is `Phlix\Plugins\Scrobbler\Trakt\TraktPlugin` (implements
 `Phlix\Shared\Plugin\LifecycleInterface` and
