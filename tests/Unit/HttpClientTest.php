@@ -319,13 +319,27 @@ final class HttpClientTest extends TestCase
     }
 
     /**
-     * Control for the `>= 400` threshold: a 3xx must still decode rather than
-     * throw, so narrowing or widening that comparison is detectable.
+     * Status-class law (review trakt__srphp m9, W-min181): only 2xx is a
+     * success. 3xx raises an API error (neither transport follows redirects,
+     * so a redirect is never the expected JSON payload), >= 400 raises the
+     * mapped errors. The 299/300/400 triple keeps any drift of the two
+     * comparison thresholds detectable from both sides.
      */
-    public function testSubFourHundredStatusDoesNotThrow(): void
+    public function testRedirectsRaiseAndOnlyTwoHundredDecodes(): void
     {
-        $this->assertSame(['redirected' => true], $this->parseResponse(399, '{"redirected":true}'));
-        $this->assertSame(['ok' => 1], $this->parseResponse(302, '{"ok":1}'));
+        $this->assertSame(['ok' => 1], $this->parseResponse(299, '{"ok":1}'));
+
+        foreach ([300, 302, 399] as $status) {
+            try {
+                $this->parseResponse($status, '{"redirected":true}');
+                $this->fail('HTTP ' . $status . ' must raise TraktApiException');
+            } catch (TraktApiException $e) {
+                $this->assertSame($status, $e->getCode());
+            }
+        }
+
+        $this->expectException(TraktApiException::class);
+        $this->parseResponse(400, '{"error":"bad"}');
     }
 
     public function testNonArrayOrUndecodableSuccessBodyYieldsEmptyArray(): void

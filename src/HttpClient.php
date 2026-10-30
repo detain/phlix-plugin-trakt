@@ -261,7 +261,8 @@ class HttpClient implements HttpClientInterface
      *
      * Shared by the async and cURL transports so both paths raise identical
      * errors (401 → auth, 429 → rate limit with a real Retry-After read,
-     * >= 400 → API error) and decode identically.
+     * 3xx → API error, >= 400 → API error) and decode identically. Only
+     * 2xx is a success.
      *
      * @param int $httpCode HTTP status code
      * @param string $raw Raw response body
@@ -289,6 +290,16 @@ class HttpClient implements HttpClientInterface
             $message = is_string($decoded['error'] ?? null) ? $decoded['error']
                 : (is_string($decoded['message'] ?? null) ? $decoded['message'] : 'Rate limit exceeded');
             throw new TraktRateLimitException($message, self::extractRetryAfter($headers));
+        }
+
+        if ($httpCode >= 300 && $httpCode < 400) {
+            // Neither transport follows redirects (no CURLOPT_FOLLOWLOCATION
+            // on the cURL path), so a 3xx arriving here means the API — or a
+            // middlebox posing as it — answered a JSON call with a redirect.
+            // A redirect body is not the expected payload: decoding it as a
+            // successful "empty result" let callers treat failures as
+            // success-with-no-data. Fail loud instead. (Review trakt__srphp m9.)
+            throw new TraktApiException('Unexpected HTTP redirect (' . $httpCode . ')', $httpCode);
         }
 
         if ($httpCode >= 400) {
