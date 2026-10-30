@@ -98,7 +98,14 @@ final class TraktApiTest extends TestCase
         $api->getWatchedHistory('testuser', 1, 100, 'access-token');
 
         $this->assertSame('GET', $http->lastMethod);
-        $this->assertStringContainsString('/users/testuser/watched', $http->lastUrl);
+        // The pull consumes HISTORY entries (flat {watched_at, movie|episode}
+        // shapes — the response shape every parser in TraktHistorySync reads).
+        // It historically called /users/{id}/watched, the watched-MOVIES
+        // endpoint whose show entries nest seasons/episodes no parser sees, so
+        // the episode half of history sync silently never imported
+        // (review trakt__srphp M5).
+        $this->assertStringContainsString('/users/testuser/history', $http->lastUrl);
+        $this->assertStringNotContainsString('/watched', $http->lastUrl);
     }
 
     public function testScrobbleSkippedWhenNoExternalId(): void

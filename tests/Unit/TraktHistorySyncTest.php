@@ -665,6 +665,109 @@ final class TraktHistorySyncTest extends TestCase
         $this->assertSame('movie', $result->type);
         $this->assertSame([], $result->metadata);
     }
+
+    /**
+     * Wire-provenance: entries below are verbatim `movie`/`episode`/`show`
+     * history shapes from the Trakt API documentation for
+     * `/users/{id}/history` (fetched 2026-10-30 from the official API
+     * blueprint, e.g. the "Pawnee Zoo" / "The Dark Knight" samples). They are
+     * the shape TraktHistorySync's parsers were written for — unlike the
+     * `/watched` summary the pull historically called, whose show entries nest
+     * `seasons[].episodes[]` and never carry a top-level `episode` key
+     * (review trakt__srphp M5).
+     */
+    public function testFindMediaItemIdResolvesRealHistoryEntryShapes(): void
+    {
+        $movieEntry = [
+            'id' => 1982346,
+            'watched_at' => '2014-03-31T09:28:53.000Z',
+            'action' => 'scrobble',
+            'type' => 'movie',
+            'movie' => [
+                'title' => 'The Dark Knight',
+                'year' => 2008,
+                'ids' => [
+                    'trakt' => 4,
+                    'slug' => 'the-dark-knight-2008',
+                    'imdb' => 'tt0468569',
+                    'tmdb' => 155,
+                ],
+            ],
+        ];
+
+        $episodeEntry = [
+            'id' => 1982347,
+            'watched_at' => '2014-02-27T09:28:53.000Z',
+            'action' => 'checkin',
+            'type' => 'episode',
+            'episode' => [
+                'season' => 2,
+                'number' => 1,
+                'title' => 'Pawnee Zoo',
+                'ids' => [
+                    'trakt' => 251,
+                    'tvdb' => 797571,
+                    'imdb' => null,
+                    'tmdb' => 397629,
+                ],
+            ],
+            'show' => [
+                'title' => 'Parks and Recreation',
+                'year' => 2009,
+                'ids' => [
+                    'trakt' => 4,
+                    'slug' => 'parks-and-recreation',
+                    'tvdb' => 84912,
+                    'imdb' => 'tt1266020',
+                    'tmdb' => 8592,
+                ],
+            ],
+        ];
+
+        // A show-level history entry carries neither top-level movie/episode.
+        $showEntry = [
+            'id' => 1982349,
+            'watched_at' => '2014-02-20T09:28:53.000Z',
+            'action' => 'watch',
+            'type' => 'show',
+            'show' => [
+                'title' => 'Breaking Bad',
+                'year' => 2008,
+                'ids' => [
+                    'trakt' => 1388,
+                    'slug' => 'breaking-bad',
+                    'tvdb' => 81189,
+                    'imdb' => 'tt0903747',
+                    'tmdb' => 1396,
+                ],
+            ],
+        ];
+
+        $db = new TraktHistorySyncTestDbDouble();
+        $db->setResults([['id' => 'media-uuid-dark-knight']]);
+        $sync = $this->createSync($db);
+
+        $this->assertSame(
+            'media-uuid-dark-knight',
+            $this->invokeFindMediaItemId($sync, $movieEntry),
+            'movie history entries resolve through their external ids',
+        );
+
+        $db2 = new TraktHistorySyncTestDbDouble();
+        $db2->setResults([['id' => 'media-uuid-pawnee-zoo']]);
+        $sync2 = $this->createSync($db2);
+
+        $this->assertSame(
+            'media-uuid-pawnee-zoo',
+            $this->invokeFindMediaItemId($sync2, $episodeEntry),
+            'episode history entries resolve through their external ids — the shape the /watched endpoint never produced',
+        );
+
+        $this->assertNull(
+            $this->invokeFindMediaItemId($sync2, $showEntry),
+            'show-level entries have no local analogue and are skipped by design',
+        );
+    }
 }
 
 /**

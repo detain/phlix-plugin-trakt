@@ -332,8 +332,23 @@ class TraktApi
     /**
      * Get watched history for a user (for Trakt → Phlix sync).
      *
+     * Hits the USER HISTORY endpoint `/users/{id}/history`, whose entries are
+     * flat `{id, watched_at, action, type, movie|episode[, show]}` objects —
+     * exactly the shape {@see TraktHistorySync} parses. This replaces the
+     * historic `/users/{id}/watched` call: that endpoint is the watched-movies
+     * summary whose show entries nest `{seasons: [{episodes: [...]}]}` under a
+     * `show` key (no top-level `episode`, only `last_watched_at`), so every
+     * episode entry resolved to null and the TV half of history sync silently
+     * never imported (review trakt__srphp M5).
+     *
+     * Note the history wire shape carries no `runtime` on its embedded
+     * movie/episode objects, so entries fall to the sync's preserve-local guard
+     * (no runtime → no destructive write). Sizing local duration from the
+     * item's own metadata is a deliberate behavior change owned by a separate
+     * follow-up, not a drive-by here.
+     *
      * @param string $username Trakt username
-     * @param int $page Page number (1-indexed)
+     * @param int $page Page number (1-indexed; the endpoint is paginated — see X-Pagination headers)
      * @param int $limit Items per page (default 100, max 1000)
      * @param string $accessToken OAuth access token
      *
@@ -355,7 +370,7 @@ class TraktApi
         ];
 
         $response = $this->http->get(
-            self::BASE_URL . '/users/' . urlencode($username) . '/watched',
+            self::BASE_URL . '/users/' . urlencode($username) . '/history',
             $params,
             $this->apiHeaders($accessToken)
         );
