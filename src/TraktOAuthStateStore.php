@@ -21,7 +21,7 @@ namespace Phlix\Plugins\Scrobbler\Trakt;
  * run under Workerman (where `$_SESSION` is not request-scoped) can
  * provide a DB-backed implementation without touching controller logic.
  *
- * @since 0.16.0
+ * @since 1.1.0
  */
 interface TraktOAuthStateStore
 {

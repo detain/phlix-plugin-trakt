@@ -12,7 +12,7 @@ namespace Phlix\Plugins\Scrobbler\Trakt;
  * unsets the entry before returning it so a captured state value
  * cannot be replayed.
  *
- * @since 0.16.0
+ * @since 1.1.0
  */
 final class SessionTraktOAuthStateStore implements TraktOAuthStateStore
 {

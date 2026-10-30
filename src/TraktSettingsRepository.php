@@ -17,7 +17,7 @@ namespace Phlix\Plugins\Scrobbler\Trakt;
  * {@see TraktSettings::toArray()}.
  *
  * @package Phlix\Plugins\Scrobbler\Trakt
- * @since 0.14.0
+ * @since 1.1.0
  */
 interface TraktSettingsRepository
 {
@@ -29,7 +29,7 @@ interface TraktSettingsRepository
      *
      * @return void
      *
-     * @since 0.14.0
+     * @since 1.1.0
      */
     public function save(array $settings): void;
 }

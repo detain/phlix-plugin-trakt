@@ -15,7 +15,7 @@ use RuntimeException;
  * Callers should respond to inbound HTTP requests with 403 and avoid
  * leaking which of the three conditions triggered the failure.
  *
- * @since 0.16.0
+ * @since 1.1.0
  */
 final class InvalidOAuthStateException extends RuntimeException
 {

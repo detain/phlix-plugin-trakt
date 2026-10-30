@@ -12,7 +12,7 @@ namespace Phlix\Plugins\Scrobbler\Trakt;
  * column, loaded via Plugin::configure() on enable.
  *
  * @package Phlix\Plugins\Scrobbler\Trakt
- * @since 0.14.0
+ * @since 1.1.0
  */
 final class TraktSettings
 {
@@ -62,7 +62,7 @@ final class TraktSettings
      *
      * @return self
      *
-     * @since 0.14.0
+     * @since 1.1.0
      */
     public static function fromArray(array $data, ?TokenCipher $cipher = null): self
     {
@@ -96,7 +96,7 @@ final class TraktSettings
      *
      * @return array<string, mixed>
      *
-     * @since 0.14.0
+     * @since 1.1.0
      */
     public function toArray(): array
     {
@@ -126,7 +126,7 @@ final class TraktSettings
      *
      * @return array<string, mixed>
      *
-     * @since 0.14.0
+     * @since 1.1.0
      */
     public function toStorageArray(?TokenCipher $cipher = null): array
     {
@@ -155,7 +155,7 @@ final class TraktSettings
      *
      * @return array<string, mixed>
      *
-     * @since 0.14.0
+     * @since 1.1.0
      */
     public function toSpaArray(): array
     {
@@ -178,7 +178,7 @@ final class TraktSettings
      *
      * @return bool True when both access and refresh tokens are present
      *
-     * @since 0.14.0
+     * @since 1.1.0
      */
     public function hasTokens(): bool
     {
@@ -194,7 +194,7 @@ final class TraktSettings
      *
      * @return bool True when expired or no token exists
      *
-     * @since 0.14.0
+     * @since 1.1.0
      */
     public function isTokenExpired(): bool
     {
@@ -212,7 +212,7 @@ final class TraktSettings
      *
      * @return bool True when hasTokens() and username is non-empty
      *
-     * @since 0.14.0
+     * @since 1.1.0
      */
     public function isConfigured(): bool
     {

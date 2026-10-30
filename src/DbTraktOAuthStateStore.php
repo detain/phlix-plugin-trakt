@@ -28,7 +28,7 @@ use Workerman\MySQL\Connection;
  * Each entry has a 10-minute TTL to prevent stale state accumulation.
  * Expired entries are cleaned up on each {@see consume()} call.
  *
- * @since 0.16.0
+ * @since 1.5.0
  */
 final class DbTraktOAuthStateStore implements TraktOAuthStateStore
 {

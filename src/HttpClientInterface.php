@@ -8,7 +8,7 @@ namespace Phlix\Plugins\Scrobbler\Trakt;
  * HTTP client interface for Trakt API requests.
  *
  * @package Phlix\Plugins\Scrobbler\Trakt
- * @since 0.14.0
+ * @since 1.1.0
  */
 interface HttpClientInterface
 {

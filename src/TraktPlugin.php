@@ -49,7 +49,7 @@ use Workerman\MySQL\Connection;
  * and stores the tokens as-is) rather than failing.
  *
  * @package Phlix\Plugins\Scrobbler\Trakt
- * @since 0.14.0
+ * @since 1.1.0
  */
 class TraktPlugin implements LifecycleInterface, ConfigurableInterface
 {
@@ -172,7 +172,7 @@ class TraktPlugin implements LifecycleInterface, ConfigurableInterface
      *
      * @return void
      *
-     * @since 0.14.0
+     * @since 1.1.0
      */
     public function configure(array $settings): void
     {
@@ -203,7 +203,7 @@ class TraktPlugin implements LifecycleInterface, ConfigurableInterface
      *
      * @return void
      *
-     * @since 0.14.0
+     * @since 1.1.0
      */
     public function onEnable(ContainerInterface $container): void
     {
@@ -325,7 +325,7 @@ class TraktPlugin implements LifecycleInterface, ConfigurableInterface
      *
      * @return void
      *
-     * @since 0.14.0
+     * @since 1.1.0
      */
     public function onDisable(): void
     {
@@ -365,7 +365,7 @@ class TraktPlugin implements LifecycleInterface, ConfigurableInterface
      *     configured/enabled, two-way sync is disabled, or the credential
      *     could not be made usable).
      *
-     * @since 1.4.0
+     * @since 1.5.0
      */
     public function syncHistoryFromTrakt(
         \Psr\Container\ContainerInterface $container,
@@ -394,7 +394,7 @@ class TraktPlugin implements LifecycleInterface, ConfigurableInterface
      *
      * @return array<class-string, string|callable>
      *
-     * @since 0.14.0
+     * @since 1.1.0
      */
     public function subscribedEvents(): array
     {
@@ -413,7 +413,7 @@ class TraktPlugin implements LifecycleInterface, ConfigurableInterface
      *
      * @return void
      *
-     * @since 0.14.0
+     * @since 1.1.0
      */
     public function onPlaybackStarted(PlaybackStarted $event): void
     {
@@ -461,7 +461,7 @@ class TraktPlugin implements LifecycleInterface, ConfigurableInterface
      *
      * @return void
      *
-     * @since 0.14.0
+     * @since 1.1.0
      */
     public function onPlaybackStopped(PlaybackStopped $event): void
     {
@@ -512,7 +512,7 @@ class TraktPlugin implements LifecycleInterface, ConfigurableInterface
      *
      * @return void
      *
-     * @since 0.14.0
+     * @since 1.1.0
      */
     public function onPlaybackPaused(PlaybackPaused $event): void
     {
@@ -549,7 +549,7 @@ class TraktPlugin implements LifecycleInterface, ConfigurableInterface
      *
      * @return void
      *
-     * @since 0.14.0
+     * @since 1.1.0
      */
     public function onPlaybackResumed(PlaybackResumed $event): void
     {
@@ -844,7 +844,7 @@ class TraktPlugin implements LifecycleInterface, ConfigurableInterface
      *
      * @return TraktSettings
      *
-     * @since 0.14.0
+     * @since 1.1.0
      */
     public function getSettings(): TraktSettings
     {
@@ -861,7 +861,7 @@ class TraktPlugin implements LifecycleInterface, ConfigurableInterface
      *
      * @return array<string, mixed>
      *
-     * @since 0.14.0
+     * @since 1.1.0
      */
     public function getSettingsForSpa(): array
     {
@@ -878,7 +878,7 @@ class TraktPlugin implements LifecycleInterface, ConfigurableInterface
      *
      * @return void
      *
-     * @since 0.14.0
+     * @since 1.1.0
      */
     public function setAccessToken(string $token): void
     {
@@ -905,7 +905,7 @@ class TraktPlugin implements LifecycleInterface, ConfigurableInterface
      *
      * @return void
      *
-     * @since 0.14.0
+     * @since 1.1.0
      */
     public function setRefreshToken(string $token): void
     {
@@ -944,7 +944,7 @@ class TraktPlugin implements LifecycleInterface, ConfigurableInterface
      * @return bool True when a valid (fresh or freshly-refreshed) token is
      *              available; false when a refresh was needed but failed.
      *
-     * @since 0.14.0
+     * @since 1.1.0
      */
     public function ensureFreshToken(): bool
     {

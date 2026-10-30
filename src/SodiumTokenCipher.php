@@ -21,7 +21,7 @@ namespace Phlix\Plugins\Scrobbler\Trakt;
  * base64, hex, or raw 32 bytes.
  *
  * @package Phlix\Plugins\Scrobbler\Trakt
- * @since 0.14.0
+ * @since 1.1.0
  */
 final class SodiumTokenCipher implements TokenCipher
 {
@@ -60,7 +60,7 @@ final class SodiumTokenCipher implements TokenCipher
      *
      * @return self|null A cipher when a valid 32-byte key was decoded, else null
      *
-     * @since 0.14.0
+     * @since 1.1.0
      */
     public static function fromConfig(mixed $rawKey): ?self
     {

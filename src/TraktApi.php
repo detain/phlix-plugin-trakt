@@ -19,7 +19,7 @@ use Psr\Log\NullLogger;
  * - Watched history sync (pull and push)
  *
  * @package Phlix\Plugins\Scrobbler\Trakt
- * @since 0.14.0
+ * @since 1.1.0
  */
 class TraktApi
 {
@@ -53,7 +53,7 @@ class TraktApi
      *
      * @return array<string, string> Header map for the HTTP client
      *
-     * @since 0.14.0
+     * @since 1.1.0
      */
     private function apiHeaders(?string $accessToken = null): array
     {
@@ -77,7 +77,7 @@ class TraktApi
      *
      * @return string Full authorization URL to redirect user to
      *
-     * @since 0.14.0
+     * @since 1.1.0
      */
     public function getAuthUrl(string $state, string $codeVerifier): string
     {
@@ -103,7 +103,7 @@ class TraktApi
      * @return array<string, mixed> Token response with access_token, refresh_token, expires_in
      *
      * @throws TraktApiException When token exchange fails
-     * @since 0.14.0
+     * @since 1.1.0
      */
     public function exchangeCode(string $code, string $codeVerifier): array
     {
@@ -140,7 +140,7 @@ class TraktApi
      * @return array<string, mixed> Token response with access_token, refresh_token, expires_in
      *
      * @throws TraktApiException When refresh fails
-     * @since 0.14.0
+     * @since 1.1.0
      */
     public function refreshAccessToken(string $refreshToken): array
     {
@@ -181,7 +181,7 @@ class TraktApi
      * @return array<string, mixed> Scrobble response with action and watched_at
      *
      * @throws TraktApiException|TraktAuthenticationException On API error or auth failure
-     * @since 0.14.0
+     * @since 1.1.0
      */
     public function scrobbleStart(MediaItem $item, float $progress, string $accessToken): array
     {
@@ -201,7 +201,7 @@ class TraktApi
      * @return array<string, mixed> Scrobble response with action and watched_at
      *
      * @throws TraktApiException|TraktAuthenticationException On API error or auth failure
-     * @since 0.14.0
+     * @since 1.1.0
      */
     public function scrobblePause(MediaItem $item, float $progress, string $accessToken): array
     {
@@ -221,7 +221,7 @@ class TraktApi
      * @return array<string, mixed> Scrobble response with action and watched_at
      *
      * @throws TraktApiException|TraktAuthenticationException On API error or auth failure
-     * @since 0.14.0
+     * @since 1.1.0
      */
     public function scrobbleStop(MediaItem $item, float $progress, string $accessToken): array
     {
@@ -349,7 +349,7 @@ class TraktApi
      * @return array<mixed> Watched history items
      *
      * @throws TraktApiException|TraktAuthenticationException On API error
-     * @since 0.14.0
+     * @since 1.1.0
      */
     public function getWatchedHistory(
         string $username,
@@ -388,7 +388,7 @@ class TraktApi
      * @return array<string, mixed> API response
      *
      * @throws TraktApiException|TraktAuthenticationException On API error
-     * @since 0.14.0
+     * @since 1.1.0
      */
     public function addToHistory(MediaItem $item, \DateTimeImmutable $watchedAt, string $accessToken): array
     {
@@ -457,7 +457,7 @@ class TraktApi
      * @return array<mixed> Array of rated items with their ratings
      *
      * @throws TraktApiException|TraktAuthenticationException On API error
-     * @since 0.14.0
+     * @since 1.1.0
      */
     public function getRatings(string $username, string $accessToken, string $type = 'all'): array
     {
@@ -491,7 +491,7 @@ class TraktApi
      * @return array<string, mixed> API response
      *
      * @throws TraktApiException|TraktAuthenticationException On API error
-     * @since 0.14.0
+     * @since 1.1.0
      */
     public function addRating(MediaItem $item, int $rating, string $accessToken): array
     {
@@ -580,7 +580,7 @@ class TraktApi
      * @return array<string, mixed> API response
      *
      * @throws TraktApiException|TraktAuthenticationException On API error
-     * @since 0.14.0
+     * @since 1.1.0
      */
     public function removeRating(MediaItem $item, string $accessToken): array
     {

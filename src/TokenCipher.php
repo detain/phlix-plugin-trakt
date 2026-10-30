@@ -19,7 +19,7 @@ namespace Phlix\Plugins\Scrobbler\Trakt;
  * any UTF-8 token string.
  *
  * @package Phlix\Plugins\Scrobbler\Trakt
- * @since 0.14.0
+ * @since 1.1.0
  */
 interface TokenCipher
 {
@@ -30,7 +30,7 @@ interface TokenCipher
      *
      * @return string Opaque ciphertext suitable for storage in settings_json
      *
-     * @since 0.14.0
+     * @since 1.1.0
      */
     public function encrypt(string $plain): string;
 
@@ -46,7 +46,7 @@ interface TokenCipher
      *
      * @return string The decrypted plaintext token
      *
-     * @since 0.14.0
+     * @since 1.1.0
      */
     public function decrypt(string $cipher): string;
 }

@@ -19,7 +19,7 @@ use Psr\Log\NullLogger;
  *   after PlaybackStopped events where completion threshold was met.
  *
  * @package Phlix\Plugins\Scrobbler\Trakt
- * @since 0.14.0
+ * @since 1.1.0
  */
 class TraktHistorySync
 {
@@ -62,7 +62,7 @@ class TraktHistorySync
      *
      * @return int Number of new entries written
      *
-     * @since 0.14.0
+     * @since 1.1.0
      */
     /** Items requested per Trakt history page. */
     private const HISTORY_PAGE_SIZE = 100;
@@ -254,7 +254,7 @@ class TraktHistorySync
      *
      * @return bool True when successfully pushed to Trakt
      *
-     * @since 0.14.0
+     * @since 1.1.0
      */
     public function syncPhlixToTrakt(
         string $mediaItemId,
@@ -579,7 +579,7 @@ class TraktHistorySync
      * @return int Number of ratings persisted (entries whose profile owner
      *             cannot be resolved are skipped and not counted)
      *
-     * @since 0.14.0
+     * @since 1.1.0
      */
     public function syncRatingsTraktToPhlix(string $profileId): int
     {
@@ -797,7 +797,7 @@ class TraktHistorySync
      *
      * @return bool True when successfully pushed to Trakt
      *
-     * @since 0.14.0
+     * @since 1.1.0
      */
     public function syncRatingsPhlixToTrakt(string $mediaItemId, int $rating): bool
     {

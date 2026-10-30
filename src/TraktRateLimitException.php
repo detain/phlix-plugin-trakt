@@ -15,7 +15,7 @@ namespace Phlix\Plugins\Scrobbler\Trakt;
  * Exception thrown when Trakt API returns a rate-limit (429) response.
  *
  * @package Phlix\Plugins\Scrobbler\Trakt
- * @since 0.14.0
+ * @since 1.5.0
  */
 final class TraktRateLimitException extends TraktApiException
 {

@@ -69,7 +69,7 @@ use Phlix\Admin\SettingsRepository;
  * field in the admin UI falls back to the environment rather than blanking the
  * credential.
  *
- * @since 0.40.0
+ * @since 1.5.0
  */
 final class TraktOperatorConfig
 {

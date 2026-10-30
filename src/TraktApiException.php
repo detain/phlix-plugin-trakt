@@ -8,7 +8,7 @@ namespace Phlix\Plugins\Scrobbler\Trakt;
  * Exception for Trakt API errors (non-auth).
  *
  * @package Phlix\Plugins\Scrobbler\Trakt
- * @since 0.14.0
+ * @since 1.1.0
  */
 class TraktApiException extends \RuntimeException
 {
