@@ -12,8 +12,11 @@ Connects a Phlix server to your Trakt.tv account:
 
 - **Scrobbles** playback (start / pause / stop) so Trakt shows what you're
   watching in real time and marks items watched at the end.
-- **Two-way history sync** — pulls your Trakt watch history into Phlix and
-  pushes Phlix completions back to Trakt on a configurable interval.
+- **Two-way history sync** — PULLS your Trakt watch history into Phlix on the
+  configurable `sync_interval_minutes` interval; PUSHES Phlix completions back
+  to Trakt event-driven (on playback stop at ≥ 90%), never on the interval.
+  Pushing completions rides on the same toggle as scrobbles: with
+  `scrobble_enabled` off, nothing is pushed even while pull sync stays on.
 - Authenticates via **OAuth**, refreshing tokens automatically.
 
 It subscribes to `phlix.playback.started`, `phlix.playback.paused`,
