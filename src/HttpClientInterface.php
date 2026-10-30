@@ -24,6 +24,8 @@ interface HttpClientInterface
      *
      * @throws TraktApiException On HTTP error
      * @throws TraktAuthenticationException On 401 Unauthorized
+     * @throws TraktRateLimitException On 429 Too Many Requests (extends
+     *         TraktApiException, so existing broad catches keep working)
      */
     public function get(string $url, array $params = [], array $headers = []): array;
 
@@ -39,6 +41,8 @@ interface HttpClientInterface
      *
      * @throws TraktApiException On HTTP error
      * @throws TraktAuthenticationException On 401 Unauthorized
+     * @throws TraktRateLimitException On 429 Too Many Requests (extends
+     *         TraktApiException, so existing broad catches keep working)
      */
     public function post(string $url, array $data = [], array $headers = []): array;
 }

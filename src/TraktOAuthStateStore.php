@@ -12,14 +12,17 @@ namespace Phlix\Plugins\Scrobbler\Trakt;
  * MUST be deleted so a malicious party cannot replay a captured
  * authorization code through a stolen state value.
  *
- * Implementations are expected to bind entries to whatever notion of
- * "user" the host already has (PHP session, JWT subject, DB row keyed
- * by user UUID, …). The default implementation in
- * {@see SessionTraktOAuthStateStore} uses `$_SESSION`, matching the
- * historic behaviour but lifted out into a swappable seam so the
- * controller becomes unit-testable and so production deployments that
- * run under Workerman (where `$_SESSION` is not request-scoped) can
- * provide a DB-backed implementation without touching controller logic.
+ * Two binding models are legitimate here:
+ * - USER-SCOPED: entries bound to whatever notion of "user" the host already
+ *   has (PHP session, JWT subject, DB row keyed by user UUID, …). The default
+ *   {@see SessionTraktOAuthStateStore} uses `$_SESSION`, matching the historic
+ *   behaviour but lifted out into a swappable seam so the controller becomes
+ *   unit-testable and so production deployments that run under Workerman
+ *   (where `$_SESSION` is not request-scoped) keep working.
+ * - STATE-KEYED SERVER STORE: {@see DbTraktOAuthStateStore} keys rows by the
+ *   `state` value alone; the unguessable, single-use `state` acts as the
+ *   bearer secret between put() and consume(). It exists for Workerman
+ *   deployments without session scope and does NOT bind to a user identity.
  *
  * @since 1.1.0
  */
