@@ -639,22 +639,10 @@ class TraktApi
             ];
         }
 
-        // DELETE uses query params for the IDs
-        if ($item->type === 'movie') {
-            assert($movie !== null);
-            $ids = $movie['ids'];
-            $type = 'movies';
-        } else {
-            assert($episode !== null);
-            $ids = $episode['ids'];
-            $type = 'episodes';
-        }
-
-        $params = [
-            'type' => $type,
-            'ids' => implode(',', array_filter($ids, static fn ($v): bool => $v !== null)),
-        ];
-
+        // Trakt removes ratings via POST /sync/ratings/remove with the media
+        // objects in the BODY — not DELETE with query params. The earlier
+        // "DELETE uses query params" comment and the $params/$ids/$type block
+        // it described were dead code: the payload below is what is sent.
         // Build the remove payload with only the relevant media type (not both)
         $removePayload = [];
         if ($movie !== null) {
