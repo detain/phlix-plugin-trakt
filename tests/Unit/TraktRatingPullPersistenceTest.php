@@ -285,4 +285,40 @@ final class TraktRatingPullPersistenceTest extends TestCase
 
         $this->assertSame(1, $sync->syncTraktToPhlix(self::PROFILE_ID));
     }
+
+    /**
+     * PG-134: the upsert's driver result was discarded and the method
+     * returned true unconditionally, so a FAILED write was counted as a
+     * persisted rating. The seam contract (tests/bootstrap Workerman\MySQL
+     * Connection stub: "query() returns an array or false — false signals
+     * a failed driver call") makes false the failure truth: a false result
+     * must not increment the synced counter (the write may be replayed next
+     * tick; lying about it loses the rating forever).
+     */
+    public function testFailedDriverWriteIsNotCountedAsPersisted(): void
+    {
+        $api = $this->createMock(TraktApi::class);
+        $api->method('getRatings')->willReturn([$this->ratingEntry(6)]);
+
+        $db = new TestableConnection();
+        $db->setResults([
+            [['id' => self::MEDIA_ITEM_ID]],  // external-id lookup succeeds
+            [['user_id' => self::USER_ID]],   // owner resolves
+            false,                             // the upsert itself FAILS
+        ]);
+
+        $sync = $this->createSync($api, $this->createMock(WatchHistory::class), $db);
+
+        $this->assertSame(
+            0,
+            $sync->syncRatingsTraktToPhlix(self::PROFILE_ID),
+            'a driver-failed rating write must not be reported as synced'
+        );
+
+        // The write WAS attempted once (the failure is the driver's, not a
+        // self-inflicted skip) — three statements, the last one failed.
+        $calls = $db->getCalls();
+        $this->assertCount(3, $calls);
+        $this->assertStringContainsString('INSERT INTO user_item_data', $calls[2]['sql']);
+    }
 }

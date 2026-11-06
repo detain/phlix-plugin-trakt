@@ -242,15 +242,11 @@ class TraktPlugin implements LifecycleInterface, ConfigurableInterface
                 ['error' => $e->getMessage()]
             );
             $fallback = TraktSettings::fromArray($settings, null);
-            $this->settings = new TraktSettings(
-                accessToken: null,
-                refreshToken: null,
-                expiresAt: null,
-                syncEnabled: $fallback->syncEnabled,
-                syncIntervalMinutes: $fallback->syncIntervalMinutes,
-                scrobbleEnabled: $fallback->scrobbleEnabled,
-                username: $fallback->username,
-            );
+            // PG-131: the UNCONNECTED projection through the wither — the
+            // token triplet drops, preferences ride verbatim; the hand-
+            // rebuilt seven-field constructor this replaces silently reset
+            // every field it forgot to copy.
+            $this->settings = $fallback->withTokenPair(null, null, null);
         }
     }
 
@@ -531,7 +527,21 @@ class TraktPlugin implements LifecycleInterface, ConfigurableInterface
         // B5: Ensure token is fresh BEFORE scheduling async call.
         // Token refresh is synchronous but fast (single HTTP round-trip to Trakt).
         // The actual scrobble HTTP call is deferred to avoid blocking the worker.
-        $this->ensureFreshToken();
+        //
+        // PG-132: the bool IS the answer. When the token is expired and the
+        // refresh fails, a scrobble now is a doomed round-trip on a
+        // credential we just PROVED dead — skip the leg loudly, the same law
+        // pullHistoryWithAuthRecovery() has always applied to the scheduled
+        // sync. (The parent discarded this result at all four handlers.)
+        if (!$this->ensureFreshToken()) {
+            $this->logger->warning(
+                'Trakt: scrobble start skipped; expired access token and refresh failed'
+                . ' (manual re-authorization required)'
+            );
+
+            return;
+        }
+
         $accessToken = $this->settings->accessToken ?? '';
 
         /** @var TraktApi $api */
@@ -541,7 +551,7 @@ class TraktPlugin implements LifecycleInterface, ConfigurableInterface
         // (see scheduleScrobbleTask()). Scheduled on the next event-loop tick so
         // the worker returns to its loop immediately; runs synchronously when no
         // Workerman timer environment is available (e.g. CLI, unit tests).
-        $this->scheduleAsyncScrobbleStart($mediaItem, $progressPercent, $accessToken, $api);
+        $this->scheduleScrobble('start', $mediaItem, $progressPercent, $accessToken, $api);
     }
 
     /**
@@ -576,7 +586,20 @@ class TraktPlugin implements LifecycleInterface, ConfigurableInterface
         $progressPercent = $this->computeProgressPercent($mediaItem, $event->finalPositionTicks);
 
         // B5: Ensure token is fresh BEFORE scheduling async call.
-        $this->ensureFreshToken();
+        // PG-132: a credential just PROVED dead must not be grinded — the
+        // scrobble is skipped loudly when the refresh cannot recover it.
+        // The early return also foregoes the reachedEnd history push below:
+        // that push would meet the very same 401 from Trakt, so the law
+        // covers both legs of a stopped playback.
+        if (!$this->ensureFreshToken()) {
+            $this->logger->warning(
+                'Trakt: scrobble stop skipped; expired access token and refresh failed'
+                . ' (manual re-authorization required)'
+            );
+
+            return;
+        }
+
         $accessToken = $this->settings->accessToken ?? '';
 
         /** @var TraktApi $api */
@@ -584,7 +607,7 @@ class TraktPlugin implements LifecycleInterface, ConfigurableInterface
 
         // B5: Non-blocking async scrobble via a ONE-SHOT Workerman timer arm
         // (see scheduleScrobbleTask()).
-        $this->scheduleAsyncScrobbleStop($mediaItem, $progressPercent, $accessToken, $api);
+        $this->scheduleScrobble('stop', $mediaItem, $progressPercent, $accessToken, $api);
 
         // syncToTrakt is synchronous (DB writes + potential API call) but only
         // runs when reachedEnd=true, which is already a terminal event for
@@ -622,13 +645,22 @@ class TraktPlugin implements LifecycleInterface, ConfigurableInterface
 
         $progressPercent = $this->computeProgressPercent($mediaItem, $event->positionTicks);
 
-        $this->ensureFreshToken();
+        // PG-132: dead credential = doomed round-trip; skip the leg loudly.
+        if (!$this->ensureFreshToken()) {
+            $this->logger->warning(
+                'Trakt: scrobble pause skipped; expired access token and refresh failed'
+                . ' (manual re-authorization required)'
+            );
+
+            return;
+        }
+
         $accessToken = $this->settings->accessToken ?? '';
 
         /** @var TraktApi $api */
         $api = $this->api;
 
-        $this->scheduleAsyncScrobblePause($mediaItem, $progressPercent, $accessToken, $api);
+        $this->scheduleScrobble('pause', $mediaItem, $progressPercent, $accessToken, $api);
     }
 
     /**
@@ -659,13 +691,24 @@ class TraktPlugin implements LifecycleInterface, ConfigurableInterface
 
         $progressPercent = $this->computeProgressPercent($mediaItem, $event->positionTicks);
 
-        $this->ensureFreshToken();
+        // PG-132: dead credential = doomed round-trip; skip the leg loudly.
+        // Resume rides the start action (Trakt's 3-state model) — same skip
+        // message the start handler carries.
+        if (!$this->ensureFreshToken()) {
+            $this->logger->warning(
+                'Trakt: scrobble start skipped; expired access token and refresh failed'
+                . ' (manual re-authorization required)'
+            );
+
+            return;
+        }
+
         $accessToken = $this->settings->accessToken ?? '';
 
         /** @var TraktApi $api */
         $api = $this->api;
 
-        $this->scheduleAsyncScrobbleStart($mediaItem, $progressPercent, $accessToken, $api);
+        $this->scheduleScrobble('start', $mediaItem, $progressPercent, $accessToken, $api);
     }
 
     /**
@@ -713,12 +756,16 @@ class TraktPlugin implements LifecycleInterface, ConfigurableInterface
     }
 
     /**
-     * B5: Schedule an async scrobble-start call.
+     * B5: Schedule a scrobble for the next event-loop tick (PG-130).
      *
-     * Defers the blocking HTTP call to the next event-loop tick as a ONE-SHOT
-     * (see {@see self::scheduleScrobbleTask()}) so the Workerman worker returns
+     * The start/pause/stop schedulers were three byte-identical wrappers
+     * around the same arm call, differing only in which executor they
+     * named — collapsed to one with the action as data. Defers the
+     * blocking HTTP call to the next event-loop tick as a ONE-SHOT (see
+     * {@see self::scheduleScrobbleTask()}) so the Workerman worker returns
      * to its loop immediately, running inline when no timer loop is available.
      *
+     * @param 'start'|'pause'|'stop' $action Scrobble action
      * @param MediaItem $mediaItem Media item being played
      * @param float $progressPercent Playback progress as a percentage (0-100)
      * @param string $accessToken OAuth access token
@@ -726,23 +773,32 @@ class TraktPlugin implements LifecycleInterface, ConfigurableInterface
      *
      * @return void
      */
-    private function scheduleAsyncScrobbleStart(
+    private function scheduleScrobble(
+        string $action,
         MediaItem $mediaItem,
         float $progressPercent,
         string $accessToken,
         TraktApi $api
     ): void {
-        $this->scheduleScrobbleTask(function () use ($mediaItem, $progressPercent, $accessToken, $api): void {
-            $this->executeScrobbleStart($mediaItem, $progressPercent, $accessToken, $api);
-        });
+        $this->scheduleScrobbleTask(
+            function () use ($action, $mediaItem, $progressPercent, $accessToken, $api): void {
+                $this->executeScrobble($action, $mediaItem, $progressPercent, $accessToken, $api);
+            }
+        );
     }
 
     /**
-     * B5: Execute a scrobble-start call (called inside timer callback).
+     * B5: Execute a scrobble call (called inside timer callback).
      *
-     * Contains the full error-handling path: initial call, 401-triggered
-     * refresh-then-retry, and final error logging.
+     * The full error-handling path — initial call, 401-triggered refresh-
+     * then-retry, final error logging — shared by all three actions (the
+     * three per-action copies lived and died together; this is the one).
+     * Every message composes to the exact string the verb-specific twins
+     * logged: 'Trakt: scrobble {action} submitted' / '... failed' /
+     * '... submitted after refresh' / '... failed after refresh retry',
+     * and the refresh context 'scrobble {action}'.
      *
+     * @param 'start'|'pause'|'stop' $action Scrobble action
      * @param MediaItem $mediaItem Media item being played
      * @param float $progressPercent Playback progress as a percentage (0-100)
      * @param string $accessToken OAuth access token
@@ -750,182 +806,43 @@ class TraktPlugin implements LifecycleInterface, ConfigurableInterface
      *
      * @return void
      */
-    private function executeScrobbleStart(
+    private function executeScrobble(
+        string $action,
         MediaItem $mediaItem,
         float $progressPercent,
         string $accessToken,
         TraktApi $api
     ): void {
+        $post = match ($action) {
+            'pause' => static fn (string $token): array => $api->scrobblePause($mediaItem, $progressPercent, $token),
+            'stop' => static fn (string $token): array => $api->scrobbleStop($mediaItem, $progressPercent, $token),
+            default => static fn (string $token): array => $api->scrobbleStart($mediaItem, $progressPercent, $token),
+        };
 
         try {
-            $api->scrobbleStart($mediaItem, $progressPercent, $accessToken);
+            $post($accessToken);
 
-            $this->logger->info('Trakt: scrobble start submitted', [
+            $this->logger->info('Trakt: scrobble ' . $action . ' submitted', [
                 'title' => $mediaItem->name,
                 'progress' => $progressPercent,
             ]);
         } catch (TraktAuthenticationException $e) {
-            if ($this->refreshAfterAuthFailure($e, 'scrobble start')) {
+            if ($this->refreshAfterAuthFailure($e, 'scrobble ' . $action)) {
                 try {
-                    $api->scrobbleStart($mediaItem, $progressPercent, $this->settings->accessToken ?? '');
+                    $post($this->settings->accessToken ?? '');
 
-                    $this->logger->info('Trakt: scrobble start submitted after refresh', [
+                    $this->logger->info('Trakt: scrobble ' . $action . ' submitted after refresh', [
                         'title' => $mediaItem->name,
                         'progress' => $progressPercent,
                     ]);
                 } catch (TraktApiException $retry) {
-                    $this->logger->warning('Trakt: scrobble start failed after refresh retry', [
+                    $this->logger->warning('Trakt: scrobble ' . $action . ' failed after refresh retry', [
                         'error' => $retry->getMessage(),
                     ]);
                 }
             }
         } catch (TraktApiException $e) {
-            $this->logger->warning('Trakt: scrobble start failed', [
-                'error' => $e->getMessage(),
-            ]);
-        }
-    }
-
-    /**
-     * B5: Schedule an async scrobble-stop call.
-     *
-     * Defers the blocking HTTP call to the next event-loop tick as a ONE-SHOT
-     * (see {@see self::scheduleScrobbleTask()}) so the Workerman worker returns
-     * to its loop immediately, running inline when no timer loop is available.
-     *
-     * @param MediaItem $mediaItem Media item that was played
-     * @param float $progressPercent Final playback progress as a percentage (0-100)
-     * @param string $accessToken OAuth access token
-     * @param TraktApi $api Trakt API client
-     *
-     * @return void
-     */
-    private function scheduleAsyncScrobbleStop(
-        MediaItem $mediaItem,
-        float $progressPercent,
-        string $accessToken,
-        TraktApi $api
-    ): void {
-        $this->scheduleScrobbleTask(function () use ($mediaItem, $progressPercent, $accessToken, $api): void {
-            $this->executeScrobbleStop($mediaItem, $progressPercent, $accessToken, $api);
-        });
-    }
-
-    /**
-     * B5: Execute a scrobble-stop call (called inside timer callback).
-     *
-     * Contains the full error-handling path: initial call, 401-triggered
-     * refresh-then-retry, and final error logging.
-     *
-     * @param MediaItem $mediaItem Media item that was played
-     * @param float $progressPercent Final playback progress as a percentage (0-100)
-     * @param string $accessToken OAuth access token
-     * @param TraktApi $api Trakt API client
-     *
-     * @return void
-     */
-    private function executeScrobbleStop(
-        MediaItem $mediaItem,
-        float $progressPercent,
-        string $accessToken,
-        TraktApi $api
-    ): void {
-
-        try {
-            $api->scrobbleStop($mediaItem, $progressPercent, $accessToken);
-
-            $this->logger->info('Trakt: scrobble stop submitted', [
-                'title' => $mediaItem->name,
-                'progress' => $progressPercent,
-            ]);
-        } catch (TraktAuthenticationException $e) {
-            if ($this->refreshAfterAuthFailure($e, 'scrobble stop')) {
-                try {
-                    $api->scrobbleStop($mediaItem, $progressPercent, $this->settings->accessToken ?? '');
-
-                    $this->logger->info('Trakt: scrobble stop submitted after refresh', [
-                        'title' => $mediaItem->name,
-                        'progress' => $progressPercent,
-                    ]);
-                } catch (TraktApiException $retry) {
-                    $this->logger->warning('Trakt: scrobble stop failed after refresh retry', [
-                        'error' => $retry->getMessage(),
-                    ]);
-                }
-            }
-        } catch (TraktApiException $e) {
-            $this->logger->warning('Trakt: scrobble stop failed', [
-                'error' => $e->getMessage(),
-            ]);
-        }
-    }
-
-    /**
-     * B6: Schedule an async scrobble-pause call.
-     *
-     * Defers the blocking HTTP call to the next event-loop tick as a ONE-SHOT
-     * (see {@see self::scheduleScrobbleTask()}) so the Workerman worker returns
-     * to its loop immediately, running inline when no timer loop is available.
-     *
-     * @param MediaItem $mediaItem Media item that was playing
-     * @param float $progressPercent Playback progress as a percentage (0-100)
-     * @param string $accessToken OAuth access token
-     * @param TraktApi $api Trakt API client
-     *
-     * @return void
-     */
-    private function scheduleAsyncScrobblePause(
-        MediaItem $mediaItem,
-        float $progressPercent,
-        string $accessToken,
-        TraktApi $api
-    ): void {
-        $this->scheduleScrobbleTask(function () use ($mediaItem, $progressPercent, $accessToken, $api): void {
-            $this->executeScrobblePause($mediaItem, $progressPercent, $accessToken, $api);
-        });
-    }
-
-    /**
-     * B6: Execute a scrobble-pause call (called inside timer callback).
-     *
-     * @param MediaItem $mediaItem Media item that was playing
-     * @param float $progressPercent Playback progress as a percentage (0-100)
-     * @param string $accessToken OAuth access token
-     * @param TraktApi $api Trakt API client
-     *
-     * @return void
-     */
-    private function executeScrobblePause(
-        MediaItem $mediaItem,
-        float $progressPercent,
-        string $accessToken,
-        TraktApi $api
-    ): void {
-
-        try {
-            $api->scrobblePause($mediaItem, $progressPercent, $accessToken);
-
-            $this->logger->info('Trakt: scrobble pause submitted', [
-                'title' => $mediaItem->name,
-                'progress' => $progressPercent,
-            ]);
-        } catch (TraktAuthenticationException $e) {
-            if ($this->refreshAfterAuthFailure($e, 'scrobble pause')) {
-                try {
-                    $api->scrobblePause($mediaItem, $progressPercent, $this->settings->accessToken ?? '');
-
-                    $this->logger->info('Trakt: scrobble pause submitted after refresh', [
-                        'title' => $mediaItem->name,
-                        'progress' => $progressPercent,
-                    ]);
-                } catch (TraktApiException $retry) {
-                    $this->logger->warning('Trakt: scrobble pause failed after refresh retry', [
-                        'error' => $retry->getMessage(),
-                    ]);
-                }
-            }
-        } catch (TraktApiException $e) {
-            $this->logger->warning('Trakt: scrobble pause failed', [
+            $this->logger->warning('Trakt: scrobble ' . $action . ' failed', [
                 'error' => $e->getMessage(),
             ]);
         }
@@ -974,15 +891,8 @@ class TraktPlugin implements LifecycleInterface, ConfigurableInterface
      */
     public function setAccessToken(string $token): void
     {
-        $this->settings = new TraktSettings(
-            accessToken: $token,
-            refreshToken: $this->settings->refreshToken,
-            expiresAt: $this->settings->expiresAt,
-            syncEnabled: $this->settings->syncEnabled,
-            syncIntervalMinutes: $this->settings->syncIntervalMinutes,
-            scrobbleEnabled: $this->settings->scrobbleEnabled,
-            username: $this->settings->username,
-        );
+        // PG-131: wither over the shared copy-from-base — one field moves.
+        $this->settings = $this->settings->withAccessToken($token);
 
         $this->persistSettings();
     }
@@ -1001,15 +911,8 @@ class TraktPlugin implements LifecycleInterface, ConfigurableInterface
      */
     public function setRefreshToken(string $token): void
     {
-        $this->settings = new TraktSettings(
-            accessToken: $this->settings->accessToken,
-            refreshToken: $token,
-            expiresAt: $this->settings->expiresAt,
-            syncEnabled: $this->settings->syncEnabled,
-            syncIntervalMinutes: $this->settings->syncIntervalMinutes,
-            scrobbleEnabled: $this->settings->scrobbleEnabled,
-            username: $this->settings->username,
-        );
+        // PG-131: wither over the shared copy-from-base — one field moves.
+        $this->settings = $this->settings->withRefreshToken($token);
 
         $this->persistSettings();
     }
@@ -1318,15 +1221,9 @@ class TraktPlugin implements LifecycleInterface, ConfigurableInterface
         }
         $expiresAt = $expiresIn > 0 ? time() + $expiresIn : $this->settings->expiresAt;
 
-        $this->settings = new TraktSettings(
-            accessToken: $accessToken,
-            refreshToken: $refreshToken,
-            expiresAt: $expiresAt,
-            syncEnabled: $this->settings->syncEnabled,
-            syncIntervalMinutes: $this->settings->syncIntervalMinutes,
-            scrobbleEnabled: $this->settings->scrobbleEnabled,
-            username: $this->settings->username,
-        );
+        // PG-131: the rotated triplet moves as ONE unit through the wither;
+        // preferences ride verbatim from the shared copy-from-base.
+        $this->settings = $this->settings->withTokenPair($accessToken, $refreshToken, $expiresAt);
 
         $this->persistSettings();
     }
@@ -1532,6 +1429,16 @@ class TraktPlugin implements LifecycleInterface, ConfigurableInterface
     /**
      * Sync completed playback to Trakt history.
      *
+     * Credential law (PG-135, review trakt__secaudit #1 / trakt__srphp #12):
+     * the push now mirrors the scheduled pull's recovery exactly — a 401
+     * surfacing from {@see TraktHistorySync::syncPhlixToTrakt()} gets ONE
+     * gated {@see self::refreshAfterAuthFailure()} followed by ONE re-push
+     * through a freshly built sync (the re-push must carry the rotated
+     * token); an unrecoverable or still-dead credential degrades LOUDLY.
+     * On the parent the sync swallowed the auth error into a silent false,
+     * so a stop-time revocation lost the completion credit with no recovery
+     * ever attempted — and never told anyone.
+     *
      * @param string $mediaItemId Media item ID
      * @param int $positionTicks Final position
      *
@@ -1549,22 +1456,70 @@ class TraktPlugin implements LifecycleInterface, ConfigurableInterface
             return;
         }
 
-        $sync = new TraktHistorySync(
-            $this->api,
-            $this->watchHistory,
-            $this->settings,
-            $this->db,
-            $this->logger
-        );
-
         $lastWatchedAt = $entry['last_watched_at'] ?? 'now';
         $durationTicks = $entry['duration_ticks'] ?? null;
+        $watchedAt = is_string($lastWatchedAt) ? $lastWatchedAt : 'now';
+        $duration = is_numeric($durationTicks) ? (int) $durationTicks : null;
 
-        $sync->syncPhlixToTrakt(
+        try {
+            $this->pushCompletedHistory($mediaItemId, $watchedAt, $positionTicks, $duration);
+
+            return;
+        } catch (TraktAuthenticationException $e) {
+            // One gated refresh, then exactly one re-push (see docblock).
+            if (!$this->refreshAfterAuthFailure($e, 'history push')) {
+                $this->logger->warning(
+                    'Trakt: history push dropped; expired access token and failed refresh'
+                    . ' (manual re-authorization required)',
+                    ['media_item_id' => $mediaItemId]
+                );
+
+                return;
+            }
+
+            try {
+                // Fresh sync on CURRENT settings — the rotated token lives
+                // in $this->settings now; a cached sync would replay the
+                // dead credential the refresh just replaced.
+                $this->pushCompletedHistory($mediaItemId, $watchedAt, $positionTicks, $duration);
+            } catch (TraktAuthenticationException $retryAuth) {
+                $this->logger->error(
+                    'Trakt: history push still unauthorized after refresh; manual re-authorization required',
+                    ['error' => $retryAuth->getMessage()],
+                );
+            }
+        }
+    }
+
+    /**
+     * Push ONE completion through a freshly built sync.
+     *
+     * Rebuilt per call via {@see self::makeHistorySync()} (asserting the
+     * null-gate above) so every attempt — including the post-refresh
+     * re-push — carries the plugin's CURRENT settings, the same reason the
+     * pull re-mints its sync after recovery.
+     *
+     * @param string $mediaItemId Media item that completed
+     * @param string $watchedAt Last-watched timestamp (string form)
+     * @param int $positionTicks Final position
+     * @param int|null $durationTicks Total duration when known
+     *
+     * @return bool True when Trakt accepted the push.
+     *
+     * @throws TraktAuthenticationException Propagated for the caller's
+     *                                      recovery law (PG-135).
+     */
+    private function pushCompletedHistory(
+        string $mediaItemId,
+        string $watchedAt,
+        int $positionTicks,
+        ?int $durationTicks
+    ): bool {
+        return $this->makeHistorySync()->syncPhlixToTrakt(
             $mediaItemId,
-            is_string($lastWatchedAt) ? $lastWatchedAt : 'now',
+            $watchedAt,
             $positionTicks,
-            is_numeric($durationTicks) ? (int) $durationTicks : null
+            $durationTicks
         );
     }
 
@@ -1760,10 +1715,13 @@ class TraktPlugin implements LifecycleInterface, ConfigurableInterface
      * Build a {@see TraktHistorySync} from the plugin's current collaborators.
      *
      * Single construction path shared by the scheduled pull tick
-     * ({@see self::runScheduledSync()}) and the on-demand pull entry point
-     * ({@see self::syncHistoryFromTrakt()}) so they cannot drift. Callers MUST
-     * have already asserted that {@see $api}, {@see $watchHistory} and {@see $db}
-     * are non-null (both callers do). Overridable as a test seam.
+     * ({@see self::runScheduledSync()}), the on-demand pull entry point
+     * ({@see self::syncHistoryFromTrakt()}) and the stop-event completion
+     * push ({@see self::pushCompletedHistory()}) so the three cannot drift
+     * — and so every post-refresh retry re-mints from CURRENT settings,
+     * carrying the rotated token. Callers MUST have already asserted that
+     * {@see $api}, {@see $watchHistory} and {@see $db} are non-null (all
+     * three callers do). Overridable as a test seam.
      *
      * @return TraktHistorySync
      */

@@ -224,4 +224,87 @@ final class TraktSettings
     {
         return $this->hasTokens() && $this->username !== '';
     }
+
+    /**
+     * Copy-from-base: rebuild this value object with the given field overrides.
+     *
+     * PG-131 (review trakt__srphp #7): every credential mutation used to
+     * hand-repeat all seven constructor fields at its own call site — four
+     * copies whose "keep the rest" list silently rots the day an eighth
+     * field is added (a dropped line resets one preference to its default
+     * on the next save). One spread of the current values is the only
+     * correct copy, and it can never forget a new field.
+     *
+     * @param array{accessToken?: string|null, refreshToken?: string|null,
+     *              expiresAt?: int|null, syncEnabled?: bool,
+     *              syncIntervalMinutes?: int, scrobbleEnabled?: bool,
+     *              username?: string} $overrides Constructor-parameter name
+     *              => new value
+     */
+    private function copyWith(array $overrides): self
+    {
+        $current = [
+            'accessToken' => $this->accessToken,
+            'refreshToken' => $this->refreshToken,
+            'expiresAt' => $this->expiresAt,
+            'syncEnabled' => $this->syncEnabled,
+            'syncIntervalMinutes' => $this->syncIntervalMinutes,
+            'scrobbleEnabled' => $this->scrobbleEnabled,
+            'username' => $this->username,
+        ];
+
+        // String-keyed spread == named arguments: every field arrives by
+        // name, so the merge can never silently reorder a value into the
+        // wrong parameter.
+        return new self(...array_merge($current, $overrides));
+    }
+
+    /**
+     * Same settings on a different access token (credential mutation only).
+     *
+     * @param string $accessToken New OAuth access token
+     *
+     * @return self A new instance; this object is never mutated.
+     */
+    public function withAccessToken(string $accessToken): self
+    {
+        return $this->copyWith(['accessToken' => $accessToken]);
+    }
+
+    /**
+     * Same settings on a different refresh token (credential mutation only).
+     *
+     * @param string $refreshToken New OAuth refresh token
+     *
+     * @return self A new instance; this object is never mutated.
+     */
+    public function withRefreshToken(string $refreshToken): self
+    {
+        return $this->copyWith(['refreshToken' => $refreshToken]);
+    }
+
+    /**
+     * Same settings on a different token triplet.
+     *
+     * The token fields move as ONE unit — access, refresh and expiry are a
+     * single custody state, and mixing a rotated access token with a stale
+     * expiry would fabricate a token that reads as fresh forever. Passing
+     * nulls is the UNCONNECTED projection: it expresses "tokens dropped,
+     * preferences kept" (the decrypt-failure custody fallback) without
+     * rebuilding six fields at the call site.
+     *
+     * @param string|null $accessToken New access token, or null to drop it
+     * @param string|null $refreshToken New refresh token, or null to drop it
+     * @param int|null $expiresAt New expiry, or null to drop it
+     *
+     * @return self A new instance; this object is never mutated.
+     */
+    public function withTokenPair(?string $accessToken, ?string $refreshToken, ?int $expiresAt): self
+    {
+        return $this->copyWith([
+            'accessToken' => $accessToken,
+            'refreshToken' => $refreshToken,
+            'expiresAt' => $expiresAt,
+        ]);
+    }
 }

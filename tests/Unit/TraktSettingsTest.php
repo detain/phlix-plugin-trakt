@@ -442,6 +442,107 @@ final class TraktSettingsTest extends TestCase
 
         $this->assertSame('legacy-plain-token', $cipher->decrypt('legacy-plain-token'));
     }
+
+    // --- withers (PG-131: one copy-from-base, not four field-by-field rebuilds) --
+
+    public function testWithAccessTokenReplacesOnlyTheAccessToken(): void
+    {
+        $base = new TraktSettings(
+            accessToken: 'old-access',
+            refreshToken: 'keep-refresh',
+            expiresAt: 123,
+            syncEnabled: false,
+            syncIntervalMinutes: 7,
+            scrobbleEnabled: false,
+            username: 'tester',
+        );
+
+        $next = $base->withAccessToken('new-access');
+
+        $this->assertSame('new-access', $next->accessToken);
+        $this->assertSame('keep-refresh', $next->refreshToken);
+        $this->assertSame(123, $next->expiresAt);
+        $this->assertFalse($next->syncEnabled);
+        $this->assertSame(7, $next->syncIntervalMinutes);
+        $this->assertFalse($next->scrobbleEnabled);
+        $this->assertSame('tester', $next->username);
+
+        // Immutable base: the original object never mutates.
+        $this->assertSame('old-access', $base->accessToken);
+    }
+
+    public function testWithRefreshTokenReplacesOnlyTheRefreshToken(): void
+    {
+        $base = new TraktSettings(
+            accessToken: 'keep-access',
+            refreshToken: 'old-refresh',
+            expiresAt: 456,
+            syncEnabled: true,
+            syncIntervalMinutes: 30,
+            scrobbleEnabled: true,
+            username: 'tester',
+        );
+
+        $next = $base->withRefreshToken('new-refresh');
+
+        $this->assertSame('new-refresh', $next->refreshToken);
+        $this->assertSame('keep-access', $next->accessToken);
+        $this->assertSame(456, $next->expiresAt);
+        $this->assertSame('tester', $next->username);
+        $this->assertSame('old-refresh', $base->refreshToken);
+    }
+
+    public function testWithTokenPairReplacesTheWholeTripletAndKeepsPreferences(): void
+    {
+        $base = new TraktSettings(
+            accessToken: 'old-access',
+            refreshToken: 'old-refresh',
+            expiresAt: 1,
+            syncEnabled: false,
+            syncIntervalMinutes: 11,
+            scrobbleEnabled: false,
+            username: 'tester',
+        );
+
+        $next = $base->withTokenPair('rot-access', 'rot-refresh', 9_999);
+
+        $this->assertSame('rot-access', $next->accessToken);
+        $this->assertSame('rot-refresh', $next->refreshToken);
+        $this->assertSame(9_999, $next->expiresAt);
+        $this->assertFalse($next->syncEnabled);
+        $this->assertSame(11, $next->syncIntervalMinutes);
+        $this->assertFalse($next->scrobbleEnabled);
+        $this->assertSame('tester', $next->username);
+    }
+
+    /**
+     * Custody-failure fallback law: a settings object whose tokens cannot be
+     * decrypted degrades to UNCONNECTED (null triplet) while the sync and
+     * scrobble preferences survive — the wither must express exactly that.
+     */
+    public function testWithTokenPairNullDropsAllTokensAndKeepsPreferences(): void
+    {
+        $base = new TraktSettings(
+            accessToken: 'cipher-text',
+            refreshToken: 'cipher-refresh',
+            expiresAt: 1_700_000_000,
+            syncEnabled: true,
+            syncIntervalMinutes: 45,
+            scrobbleEnabled: false,
+            username: 'tester',
+        );
+
+        $next = $base->withTokenPair(null, null, null);
+
+        $this->assertNull($next->accessToken);
+        $this->assertNull($next->refreshToken);
+        $this->assertNull($next->expiresAt);
+        $this->assertFalse($next->hasTokens());
+        $this->assertTrue($next->syncEnabled);
+        $this->assertSame(45, $next->syncIntervalMinutes);
+        $this->assertFalse($next->scrobbleEnabled);
+        $this->assertSame('tester', $next->username);
+    }
 }
 
 /**

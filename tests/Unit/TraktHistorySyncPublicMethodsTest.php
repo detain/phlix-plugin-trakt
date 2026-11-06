@@ -504,4 +504,103 @@ final class TraktHistorySyncPublicMethodsTest extends TestCase
 
         $this->assertSame(0, $sync->syncTraktToPhlix('default'));
     }
+
+    // --- credential law on the push surfaces (PG-135) ------------------------
+
+    /**
+     * History PULL rethrows a 401 so TraktPlugin's recovery (one gated
+     * refresh, one re-pull) can run. The PUSH surfaces carry the same
+     * credential truth: on the parent every push catch was a blanket
+     * TraktApiException arm that swallowed the auth subclass into a silent
+     * false — a dead token then died unattended and every later push of
+     * every user failed identically with no recovery path attempted.
+     */
+    public function testSyncPhlixToTraktRethrowsAuthenticationFailure(): void
+    {
+        $api = $this->createMock(TraktApi::class);
+        $api->method('addToHistory')->willThrowException(
+            new \Phlix\Plugins\Scrobbler\Trakt\TraktAuthenticationException('Expired token', 401)
+        );
+
+        $watchHistory = $this->createMock(WatchHistory::class);
+        $watchHistory->method('getForMediaItem')->willReturn([
+            'media_name' => 'Test Movie',
+            'media_type' => 'movie',
+            'metadata' => ['tmdb_id' => 42],
+            'progress_percent' => 95.0,
+        ]);
+
+        $sync = $this->createSync($api, $watchHistory);
+
+        $this->expectException(\Phlix\Plugins\Scrobbler\Trakt\TraktAuthenticationException::class);
+        $sync->syncPhlixToTrakt('media-id', '2024-01-15T10:30:00Z', 0, null);
+    }
+
+    public function testSyncRatingsPhlixToTraktRethrowsAuthenticationFailure(): void
+    {
+        $api = $this->createMock(TraktApi::class);
+        $api->method('addRating')->willThrowException(
+            new \Phlix\Plugins\Scrobbler\Trakt\TraktAuthenticationException('Expired token', 401)
+        );
+
+        $watchHistory = $this->createMock(WatchHistory::class);
+        $watchHistory->method('getForMediaItem')->willReturn([
+            'media_name' => 'Test Movie',
+            'media_type' => 'movie',
+            'metadata' => ['tmdb_id' => 42],
+            'progress_percent' => 95.0,
+        ]);
+
+        $sync = $this->createSync($api, $watchHistory);
+
+        $this->expectException(\Phlix\Plugins\Scrobbler\Trakt\TraktAuthenticationException::class);
+        $this->assertFalse($sync->syncRatingsPhlixToTrakt('media-id', 8));
+    }
+
+    /**
+     * RATINGS PULL is a pull: it must carry the history pull's law verbatim —
+     * auth errors rethrow to the caller's recovery, only transient API
+     * failures degrade to 0. The parent caught (and swallowed) auth inside a
+     * blanket TraktApiException arm.
+     */
+    public function testSyncRatingsTraktToPhlixRethrowsAuthenticationFailure(): void
+    {
+        $api = $this->createMock(TraktApi::class);
+        $api->method('getRatings')->willThrowException(
+            new \Phlix\Plugins\Scrobbler\Trakt\TraktAuthenticationException('Expired token', 401)
+        );
+
+        $sync = $this->createSync($api);
+
+        $this->expectException(\Phlix\Plugins\Scrobbler\Trakt\TraktAuthenticationException::class);
+        $sync->syncRatingsTraktToPhlix('default');
+    }
+
+    /**
+     * PG-135 (secaudit#9): the last_watched_at string flows from stored
+     * history into `new DateTimeImmutable(...)` unguarded — any malformed
+     * value THROWS, and on the parent the throw escaped the intended catch
+     * arm (which only covers TraktApiException) to fail the whole push.
+     * The parse must degrade like the pull side's parseWatchedAt(): warn and
+     * fall back to now, still pushing the completion.
+     */
+    public function testSyncPhlixToTraktFallsBackToNowOnMalformedLastWatchedAt(): void
+    {
+        $api = $this->createMock(TraktApi::class);
+        $api->expects($this->once())
+            ->method('addToHistory')
+            ->willReturn(['added' => ['movies' => 1]]);
+
+        $watchHistory = $this->createMock(WatchHistory::class);
+        $watchHistory->method('getForMediaItem')->willReturn([
+            'media_name' => 'Test Movie',
+            'media_type' => 'movie',
+            'metadata' => ['tmdb_id' => 42],
+            'progress_percent' => 95.0,
+        ]);
+
+        $sync = $this->createSync($api, $watchHistory);
+
+        $this->assertTrue($sync->syncPhlixToTrakt('media-id', 'not-a-date', 0, null));
+    }
 }

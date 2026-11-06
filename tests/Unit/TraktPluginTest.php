@@ -1705,6 +1705,218 @@ final class TraktPluginTest extends TestCase
         );
         $this->assertStringContainsString('redirect_uri', implode("\n", $logger->warnings));
     }
+
+    // --- PG-132: dead credential must not schedule a doomed scrobble --------
+
+    /**
+     * All four playback handlers ran ensureFreshToken() and DISCARDED the
+     * bool: when the token was expired AND the refresh failed, they still
+     * scheduled the scrobble with the known-dead access token — a doomed
+     * round-trip per event that additionally re-entered the 401 retry path.
+     * The scheduled-sync entry (pullHistoryWithAuthRecovery) already skips
+     * on false; the playback legs must honor the same answer.
+     */
+    public function testPlaybackStartSkipsScrobbleWhenCredentialCannotBeRecovered(): void
+    {
+        $api = new FakeTraktApi();
+        $api->throwOnFirstRefresh = true;
+        $plugin = $this->makeWiredPlugin($api, new RecordingSettingsRepository(), $this->expiredSettings());
+
+        $plugin->onPlaybackStarted($this->startEvent());
+
+        $this->assertSame(1, $api->refreshCalls, 'the refresh is attempted once');
+        $this->assertSame(0, $api->scrobbleStartCalls, 'a known-dead credential must not scrobble');
+    }
+
+    public function testPlaybackPausedSkipsScrobbleWhenCredentialCannotBeRecovered(): void
+    {
+        $api = new FakeTraktApi();
+        $api->throwOnFirstRefresh = true;
+        $plugin = $this->makeWiredPlugin($api, new RecordingSettingsRepository(), $this->expiredSettings());
+
+        $plugin->onPlaybackPaused($this->pauseEvent());
+
+        $this->assertSame(1, $api->refreshCalls);
+        $this->assertSame(0, $api->scrobblePauseCalls);
+    }
+
+    public function testPlaybackResumedSkipsScrobbleWhenCredentialCannotBeRecovered(): void
+    {
+        $api = new FakeTraktApi();
+        $api->throwOnFirstRefresh = true;
+        $plugin = $this->makeWiredPlugin($api, new RecordingSettingsRepository(), $this->expiredSettings());
+
+        $plugin->onPlaybackResumed($this->resumeEvent());
+
+        $this->assertSame(1, $api->refreshCalls);
+        $this->assertSame(0, $api->scrobbleStartCalls, 'resume maps onto the start leg');
+    }
+
+    public function testPlaybackStoppedSkipsScrobbleWhenCredentialCannotBeRecovered(): void
+    {
+        $api = new FakeTraktApi();
+        $api->throwOnFirstRefresh = true;
+        $plugin = $this->makeWiredPlugin($api, new RecordingSettingsRepository(), $this->expiredSettings());
+
+        $plugin->onPlaybackStopped($this->stopEvent());
+
+        $this->assertSame(1, $api->refreshCalls);
+        $this->assertSame(0, $api->scrobbleStopCalls);
+    }
+
+    // --- PG-135: completed-history push carries the pull's recovery law -----
+
+    /**
+     * The scheduled pull gets one gated refresh and one re-pull on a 401;
+     * the event-driven push had no such path on the parent — syncPhlixToTrakt
+     * swallowed the auth error into a silent false, so a revocation at stop
+     * time lost the completion credit with no recovery ever attempted. A
+     * fresh-credential plugin must rotate once and re-push exactly once.
+     */
+    public function testHistoryPushRecoversWithOneRefreshAndOneRePush(): void
+    {
+        $api = new PushRecoveryTraktApi();
+        $plugin = $this->wirePushRecoveryPlugin($api);
+
+        $plugin->onPlaybackStopped(new PlaybackStopped(
+            sessionId: 'sess-1',
+            userId: 'user-1',
+            mediaItemId: 'mi-1',
+            deviceId: 'dev-1',
+            finalPositionTicks: 1000 * \Phlix\Auth\WatchHistory::TICKS_PER_SECOND,
+            reachedEnd: true,
+        ));
+
+        $this->assertSame(1, $api->refreshCalls, 'exactly one gated refresh after the push 401');
+        $this->assertSame(2, $api->addToHistoryCalls, 'the failed push must be replayed exactly once');
+        $this->assertSame(
+            'rotated-access',
+            $api->lastPushToken,
+            'the re-push must carry the rotated token, not the dead one'
+        );
+    }
+
+    /**
+     * When the credential cannot be recovered the push degrades LOUDLY and
+     * once: no exception may escape the playback handler, and there is
+     * exactly one doomed attempt — no retry loop against a dead token.
+     */
+    public function testHistoryPushDegradesLoudlyWhenCredentialCannotRecover(): void
+    {
+        $api = new PushRecoveryTraktApi();
+        $api->failRefresh = true;
+        $plugin = $this->wirePushRecoveryPlugin($api);
+
+        $plugin->onPlaybackStopped(new PlaybackStopped(
+            sessionId: 'sess-1',
+            userId: 'user-1',
+            mediaItemId: 'mi-1',
+            deviceId: 'dev-1',
+            finalPositionTicks: 1000 * \Phlix\Auth\WatchHistory::TICKS_PER_SECOND,
+            reachedEnd: true,
+        ));
+
+        $this->assertSame(1, $api->refreshCalls, 'the recovery attempts one exchange');
+        $this->assertSame(1, $api->addToHistoryCalls, 'an unrecoverable credential must not be re-grinded');
+    }
+
+    /**
+     * Build a plugin wired for the reachedEnd push path: the event leg needs
+     * a resolvable media item, and syncToTrakt additionally needs the
+     * watch-history + DB collaborators that onEnable leaves null in the
+     * stub container (set by reflection, same idiom as the pull tests).
+     */
+    private function wirePushRecoveryPlugin(PushRecoveryTraktApi $api): TraktPlugin
+    {
+        $settings = $this->freshSettings();
+        $plugin = new TraktPlugin($settings, new NullLogger(), $api, new RecordingSettingsRepository());
+
+        $container = new StubContainer([
+            \Phlix\Media\Library\ItemRepository::class => new FakeItemRepository(),
+            \Phlix\Auth\WatchHistory::class => null,
+        ]);
+        $plugin->onEnable($container);
+        $plugin->configure(array_merge($settings->toArray(), ['enabled' => true]));
+
+        $ref = new \ReflectionClass($plugin);
+        $watchHistory = $this->createMock(\Phlix\Auth\WatchHistory::class);
+        $watchHistory->method('getForMediaItem')->willReturn([
+            'media_name' => 'Test Movie',
+            'media_type' => 'movie',
+            'metadata' => ['tmdb_id' => 42],
+            'progress_percent' => 95.0,
+            'last_watched_at' => '2024-06-15T12:00:00Z',
+            'duration_ticks' => 1000 * \Phlix\Auth\WatchHistory::TICKS_PER_SECOND,
+        ]);
+        $watchProp = $ref->getProperty('watchHistory');
+        $watchProp->setAccessible(true);
+        $watchProp->setValue($plugin, $watchHistory);
+
+        $dbProp = $ref->getProperty('db');
+        $dbProp->setAccessible(true);
+        $dbProp->setValue($plugin, new \Workerman\MySQL\TestableConnection());
+
+        return $plugin;
+    }
+}
+
+/**
+ * API stand-in for the reachedEnd history push: the FIRST push answers 401
+ * with the pre-refresh token and the rotated token succeeds; the refresh
+ * itself is counted and can be made to fail. scrobbleStop stays benign so
+ * the event leg does not interfere with the push accounting.
+ *
+ * @internal test seam
+ */
+final class PushRecoveryTraktApi extends TraktApi
+{
+    public int $refreshCalls = 0;
+    public int $scrobbleStopCalls = 0;
+    public int $addToHistoryCalls = 0;
+    public string $lastPushToken = '';
+    public bool $failRefresh = false;
+
+    public function __construct()
+    {
+        parent::__construct(new NullHttpClient(), 'client-id', 'client-secret', new NullLogger());
+    }
+
+    public function refreshAccessToken(string $refreshToken): array
+    {
+        $this->refreshCalls++;
+
+        if ($this->failRefresh) {
+            throw new TraktApiException('refresh boom', 500);
+        }
+
+        return [
+            'access_token' => 'rotated-access',
+            'refresh_token' => 'rotated-refresh',
+            'expires_in' => 3600,
+        ];
+    }
+
+    public function scrobbleStop(\Phlix\Media\Library\MediaItem $item, float $progress, string $accessToken): array
+    {
+        $this->scrobbleStopCalls++;
+
+        return ['action' => 'stop', 'watched_at' => '2026-06-28T00:00:00Z'];
+    }
+
+    public function addToHistory(
+        \Phlix\Media\Library\MediaItem $item,
+        \DateTimeImmutable $watchedAt,
+        string $accessToken
+    ): array {
+        $this->addToHistoryCalls++;
+        $this->lastPushToken = $accessToken;
+
+        if ($accessToken !== 'rotated-access') {
+            throw new TraktAuthenticationException('Expired token', 401);
+        }
+
+        return ['added' => ['movies' => 1]];
+    }
 }
 
 /**

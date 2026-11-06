@@ -58,30 +58,38 @@ class TraktHistorySync
     private const HISTORY_MAX_PAGES = 100;
 
     /**
-     * Fetch the user's COMPLETE watched history, following pagination.
+     * Walk ONE paginated Trakt list endpoint to completion (PG-133).
      *
-     * Previously this took only page 1 with a limit of 100, so any user with more
-     * than 100 watched items had the remainder silently dropped — the sync
-     * reported success having imported a truncated history.
+     * Single pager shared by the history pull and the ratings pull. Both
+     * endpoints truncate at 100 items when asked for one page, and both
+     * signal the end of results the same way (a short or empty page), so
+     * they get ONE loop — the history pager's stop laws generalized rather
+     * than a second near-copy grown beside it (the PG-130 lesson applied
+     * before the drift can happen: the ratings surface used to fetch page
+     * 1 only, silently dropping everything past the first hundred ratings).
      *
-     * Stops at the first short page (fewer items than requested), which is the
-     * end-of-results signal, and is bounded by {@see self::HISTORY_MAX_PAGES}.
+     * Stops at the first short page (fewer items than requested) and is
+     * bounded by {@see self::HISTORY_MAX_PAGES}. Endpoint errors —
+     * transient or credential — propagate verbatim; each caller decides
+     * its own degradation law.
      *
-     * @return array<mixed> Every watched item across all pages.
+     * @param callable(int): array<mixed> $fetchPage Receives the 1-based
+     *        page number, returns that page's items.
+     * @param string $what Label woven into the cap warning ("history",
+     *        "ratings") — for "history" the line is byte-ident to the
+     *        pager's original.
      *
-     * @throws TraktApiException On API error.
+     * @return array<mixed> Every item across all pages.
+     *
+     * @throws TraktApiException|TraktAuthenticationException whatever the
+     *         endpoint raises (see sync-entry docblocks for the law).
      */
-    private function fetchAllWatchedHistory(): array
+    private function fetchAllPages(callable $fetchPage, string $what): array
     {
         $all = [];
 
         for ($page = 1; $page <= self::HISTORY_MAX_PAGES; $page++) {
-            $batch = $this->api->getWatchedHistory(
-                $this->settings->username,
-                $page,
-                self::HISTORY_PAGE_SIZE,
-                $this->settings->accessToken ?? ''
-            );
+            $batch = $fetchPage($page);
 
             $count = count($batch);
             if ($count === 0) {
@@ -98,15 +106,66 @@ class TraktHistorySync
             }
         }
 
-        // Only reachable by hitting the page cap, which means the history is
+        // Only reachable by hitting the page cap, which means the stream is
         // larger than we are willing to pull in one pass. Say so — a silently
-        // truncated import is the defect this method exists to fix.
-        $this->logger->warning('TraktHistorySync: hit the page cap; history may be incomplete', [
+        // truncated import is the defect this pager exists to fix.
+        $this->logger->warning('TraktHistorySync: hit the page cap; ' . $what . ' may be incomplete', [
             'pages_fetched' => self::HISTORY_MAX_PAGES,
             'items_fetched' => count($all),
         ]);
 
         return $all;
+    }
+
+    /**
+     * Fetch the user's COMPLETE watched history, following pagination.
+     *
+     * Previously this took only page 1 with a limit of 100, so any user with more
+     * than 100 watched items had the remainder silently dropped — the sync
+     * reported success having imported a truncated history. The walk itself is
+     * the shared {@see self::fetchAllPages()} law.
+     *
+     * @return array<mixed> Every watched item across all pages.
+     *
+     * @throws TraktApiException On API error.
+     */
+    private function fetchAllWatchedHistory(): array
+    {
+        return $this->fetchAllPages(
+            fn (int $page): array => $this->api->getWatchedHistory(
+                $this->settings->username,
+                $page,
+                self::HISTORY_PAGE_SIZE,
+                $this->settings->accessToken ?? ''
+            ),
+            'history'
+        );
+    }
+
+    /**
+     * Fetch the user's COMPLETE ratings list, following pagination (PG-133).
+     *
+     * The ratings pull carried the history pull's original truncation
+     * defect in full: one unparameterized getRatings() call, so every user
+     * with more than 100 ratings silently synced a page-1 slice while the
+     * sync logged success. Same walk, same stop laws, 'all' type filter.
+     *
+     * @return array<mixed> Every rated item across all pages.
+     *
+     * @throws TraktApiException On API error.
+     */
+    private function fetchAllRatings(): array
+    {
+        return $this->fetchAllPages(
+            fn (int $page): array => $this->api->getRatings(
+                $this->settings->username,
+                $this->settings->accessToken ?? '',
+                'all',
+                $page,
+                self::HISTORY_PAGE_SIZE
+            ),
+            'ratings'
+        );
     }
 
     /**
@@ -247,12 +306,20 @@ class TraktHistorySync
      * Pushes local WatchHistory entries that have reached ≥ 90%
      * completion to Trakt so the user gets credit for the watch.
      *
+     * Credential law (PG-135, mirroring the pull entries): a 401 is NOT a
+     * transient blip and is not swallowed here — it rethrows so the calling
+     * TraktPlugin::syncToTrakt() can run its one gated refresh and one
+     * re-push. Only transient API failures degrade to a logged false.
+     *
      * @param string $mediaItemId Media item that reached 90%+ completion
      * @param string $lastWatchedAt When the item was last watched
      * @param int $positionTicks Final playback position
      * @param int|null $durationTicks Total duration
      *
      * @return bool True when successfully pushed to Trakt
+     *
+     * @throws TraktAuthenticationException When the credential is rejected
+     *                                      (401) — caller owns recovery.
      *
      * @since 1.1.0
      */
@@ -283,7 +350,7 @@ class TraktHistorySync
 
         try {
             $item = $this->buildMediaItem($mediaItemId, $existing);
-            $watchedAt = new \DateTimeImmutable($lastWatchedAt);
+            $watchedAt = $this->parseLastWatchedAt($lastWatchedAt);
 
             $response = $this->api->addToHistory($item, $watchedAt, $this->settings->accessToken ?? '');
 
@@ -303,12 +370,45 @@ class TraktHistorySync
             ]);
 
             return true;
+        } catch (TraktAuthenticationException $e) {
+            // Auth failures rethrow (see method docblock): only the caller
+            // holds the credential-recovery machinery (gated refresh +
+            // single re-push). Swallowing it here — the parent's blanket
+            // parent-class catch — made a dead token a silent, permanent
+            // push death (review trakt__secaudit #1 / trakt__srphp #12).
+            throw $e;
         } catch (TraktApiException $e) {
             $this->logger->warning('TraktHistorySync: failed to push to Trakt', [
                 'media_item_id' => $mediaItemId,
                 'error' => $e->getMessage(),
             ]);
             return false;
+        }
+    }
+
+    /**
+     * Parse the stored last-watched timestamp, degrading loudly (PG-135,
+     * secaudit #9): a malformed value used to throw straight out of
+     * syncPhlixToTrakt — the try/catch only covers API errors — losing a
+     * legitimately-completed watch to one corrupt string. The pull side's
+     * {@see self::parseWatchedAt()} already had the right shape: warn,
+     * fall back to "now". The credit still belongs on the board.
+     *
+     * @param string $lastWatchedAt Stored ISO-8601-ish timestamp, or 'now'
+     *
+     * @return \DateTimeImmutable Parsed time, or the current time on failure.
+     */
+    private function parseLastWatchedAt(string $lastWatchedAt): \DateTimeImmutable
+    {
+        try {
+            return new \DateTimeImmutable($lastWatchedAt);
+        } catch (\Exception $e) {
+            $this->logger->warning('TraktHistorySync: failed to parse last_watched_at; using current time', [
+                'value' => $lastWatchedAt,
+                'error' => $e->getMessage(),
+            ]);
+
+            return new \DateTimeImmutable();
         }
     }
 
@@ -674,10 +774,19 @@ class TraktHistorySync
      * user_item_data.rating column for matched items.
      * Uses the same robust ID matching as history sync, with title/year fallback.
      *
+     * Two laws the history pull already carried and this surface now shares
+     * (PG-133/PG-135): the fetch walks ALL pages (a page-1-only pull was a
+     * silent 100-item cap dressed up as a complete sync), and a credential
+     * failure RETHROWS to the caller's recovery rather than degrading to a
+     * zero-count that reads as "user has no ratings".
+     *
      * @param string $profileId Profile ID to sync ratings for
      *
      * @return int Number of ratings persisted (entries whose profile owner
      *             cannot be resolved are skipped and not counted)
+     *
+     * @throws TraktAuthenticationException When the credential is rejected
+     *                                      (401) — caller owns recovery.
      *
      * @since 1.1.0
      */
@@ -694,10 +803,11 @@ class TraktHistorySync
         }
 
         try {
-            $ratings = $this->api->getRatings(
-                $this->settings->username,
-                $this->settings->accessToken ?? ''
-            );
+            $ratings = $this->fetchAllRatings();
+        } catch (TraktAuthenticationException $e) {
+            // Same rethrow law as syncTraktToPhlix() above — a dead
+            // credential is not a transient fetch failure.
+            throw $e;
         } catch (TraktApiException $e) {
             $this->logger->warning('TraktHistorySync: failed to fetch Trakt ratings', [
                 'error' => $e->getMessage(),
@@ -838,7 +948,8 @@ class TraktHistorySync
      * @param string $mediaItemId Local media item ID
      * @param int $rating Rating value (1-10)
      *
-     * @return bool True when the rating was persisted.
+     * @return bool True ONLY when the driver reports the write landed;
+     *              false when the owner is unresolvable or the query failed.
      */
     private function updateLocalRating(string $profileId, string $mediaItemId, int $rating): bool
     {
@@ -856,12 +967,27 @@ class TraktHistorySync
             return false;
         }
 
-        $this->db->query(
+        $result = $this->db->query(
             'INSERT INTO user_item_data (user_id, profile_id, item_id, rating)
              VALUES (?, ?, ?, ?)
              ON DUPLICATE KEY UPDATE rating = VALUES(rating)',
             [$userId, $profileId, $mediaItemId, $rating]
         );
+
+        // PG-134: the driver's answer IS the truth of the write. Per the
+        // seam contract (Workerman\MySQL\Connection::query(): array|false,
+        // false = failed call) only `false` means failure — a successful
+        // upsert that changed no rows (re-pull of an identical rating)
+        // still returns a non-false result and IS persisted state, so it
+        // counts. Returning true over a false would let the sync report
+        // ratings that never landed, and nothing would ever replay them.
+        if ($result === false) {
+            $this->logger->warning('TraktHistorySync: rating write failed; not counted', [
+                'media_item_id' => $mediaItemId,
+            ]);
+
+            return false;
+        }
 
         return true;
     }
@@ -892,10 +1018,16 @@ class TraktHistorySync
      *
      * Pushes a local rating to Trakt for a specific media item.
      *
+     * Credential law (PG-135): a 401 rethrows for caller-side recovery;
+     * transient API failures degrade to a logged false.
+     *
      * @param string $mediaItemId Media item that was rated
      * @param int $rating Rating value (1-10)
      *
      * @return bool True when successfully pushed to Trakt
+     *
+     * @throws TraktAuthenticationException When the credential is rejected
+     *                                      (401) — caller owns recovery.
      *
      * @since 1.1.0
      */
@@ -931,6 +1063,12 @@ class TraktHistorySync
             ]);
 
             return true;
+        } catch (TraktAuthenticationException $e) {
+            // PG-135: same credential law as the history push — a 401
+            // rethrows to a caller that can actually recover it; the
+            // blanket parent-catch turned dead credentials into a silent
+            // per-call false no one could act on.
+            throw $e;
         } catch (TraktApiException $e) {
             $this->logger->warning('TraktHistorySync: failed to push rating to Trakt', [
                 'media_item_id' => $mediaItemId,

@@ -280,19 +280,28 @@ class TraktApi
     }
 
     /**
-     * Internal scrobble dispatcher for all three actions.
+     * Build the Trakt media payload object for an item (PG-130).
      *
-     * @param string $action Scrobble action (start|pause|stop)
-     * @param MediaItem $item Media item
-     * @param float $progress Playback progress as a percentage (0-100)
-     * @param string $accessToken OAuth access token
+     * All four item-addressed write surfaces (scrobble, /sync/history,
+     * rating add, rating remove) used to carry their own byte-for-byte
+     * copy of this ids block plus the resolvability gate — four copies
+     * is exactly how the history push shipped a year WITHOUT the gate
+     * its siblings had (the PG-129 defect). One builder, one law.
      *
-     * @return array<string, mixed> Scrobble response (`action` + `watched_at`,
-     *         plus `'skipped' => true` on the no-external-ID path)
+     * The gate is Trakt's own contract: an item without a trakt/imdb/tmdb
+     * id (movie) or trakt/tvdb/imdb/tmdb id (episode) cannot be resolved
+     * server-side, so a payload for it is a doomed round-trip and never
+     * leaves the wire. A slug alone is presentable but NOT counted as
+     * resolvable — matching the historic gate semantics verbatim.
      *
-     * @throws TraktApiException|TraktAuthenticationException
+     * @param MediaItem $item Media item to address
+     *
+     * @return non-empty-array<'movie'|'episode', array<string, mixed>>|null
+     *         Single-key map shaped exactly as the endpoint payload expects —
+     *         `['movie' => [...]]` or `['episode' => [...]]` — or null when
+     *         the item cannot be resolved (caller emits its own skip marker).
      */
-    private function scrobble(string $action, MediaItem $item, float $progress, string $accessToken): array
+    private function buildMediaIds(MediaItem $item): ?array
     {
         $movie = null;
         $episode = null;
@@ -334,6 +343,40 @@ class TraktApi
         );
 
         if (!$hasAnyId) {
+            return null;
+        }
+
+        if ($movie !== null) {
+            return ['movie' => $movie];
+        }
+
+        if ($episode !== null) {
+            return ['episode' => $episode];
+        }
+
+        // Unreachable past the gate (it only passes for a movie/episode
+        // shape), but the builder never hands back a null-payload map.
+        return null;
+    }
+
+    /**
+     * Internal scrobble dispatcher for all three actions.
+     *
+     * @param string $action Scrobble action (start|pause|stop)
+     * @param MediaItem $item Media item
+     * @param float $progress Playback progress as a percentage (0-100)
+     * @param string $accessToken OAuth access token
+     *
+     * @return array<string, mixed> Scrobble response (`action` + `watched_at`,
+     *         plus `'skipped' => true` on the no-external-ID path)
+     *
+     * @throws TraktApiException|TraktAuthenticationException
+     */
+    private function scrobble(string $action, MediaItem $item, float $progress, string $accessToken): array
+    {
+        $media = $this->buildMediaIds($item);
+
+        if ($media === null) {
             $this->logger->debug('Trakt: scrobble skipped: no external ID available', [
                 'action' => $action,
                 'item' => $item->name,
@@ -350,12 +393,7 @@ class TraktApi
         // EITHER a `movie` OR an `episode` object plus `progress`. Sending the
         // action in the body or a null sibling key is rejected/ignored by Trakt,
         // and posting to /scrobble/movie|episode (the previous behavior) 404s.
-        $payload = ['progress' => $progress];
-        if ($movie !== null) {
-            $payload['movie'] = $movie;
-        } elseif ($episode !== null) {
-            $payload['episode'] = $episode;
-        }
+        $payload = ['progress' => $progress] + $media;
 
         $response = $this->http->post(
             self::BASE_URL . '/scrobble/' . $action,
@@ -449,50 +487,14 @@ class TraktApi
      */
     public function addToHistory(MediaItem $item, \DateTimeImmutable $watchedAt, string $accessToken): array
     {
-        $movie = null;
-        $episode = null;
-
-        if ($item->type === 'movie') {
-            $movie = [
-                'ids' => [
-                    'trakt' => $item->metadata['trakt_id'] ?? null,
-                    'slug' => $item->metadata['slug'] ?? null,
-                    'imdb' => $item->metadata['imdb_id'] ?? null,
-                    'tmdb' => $item->metadata['tmdb_id'] ?? null,
-                ],
-            ];
-        } elseif ($item->type === 'episode') {
-            $episode = [
-                'ids' => [
-                    'trakt' => $item->metadata['trakt_id'] ?? null,
-                    'tvdb' => $item->metadata['tvdb_id'] ?? null,
-                    'imdb' => $item->metadata['imdb_id'] ?? null,
-                    'tmdb' => $item->metadata['tmdb_id'] ?? null,
-                ],
-                'season' => $item->metadata['season_number'] ?? 1,
-                'number' => $item->metadata['episode_number'] ?? 1,
-            ];
-        }
-
         // PG-129: the scrobble and rating surfaces refuse to talk about an
-        // item Trakt cannot resolve; history push must carry the same law.
-        // An empty-ids payload is a doomed round-trip (Trakt rejects it),
-        // so it never leaves the wire. Idioms identical to the siblings.
-        $movieIds = $movie['ids'] ?? [];
-        $episodeIds = $episode['ids'] ?? [];
-        $hasAnyId = (
-            $item->type === 'movie'
-            && ($movieIds['trakt'] ?? $movieIds['imdb'] ?? $movieIds['tmdb'] ?? null) !== null
-        ) || (
-            $item->type === 'episode'
-            && ($episodeIds['trakt']
-                ?? $episodeIds['tvdb']
-                ?? $episodeIds['imdb']
-                ?? $episodeIds['tmdb']
-                ?? null) !== null
-        );
+        // item Trakt cannot resolve; history push carries the same law —
+        // now literally, through the one shared builder (PG-130). An
+        // empty-ids payload is a doomed round-trip (Trakt rejects it), so
+        // it never leaves the wire.
+        $media = $this->buildMediaIds($item);
 
-        if (!$hasAnyId) {
+        if ($media === null) {
             $this->logger->debug('Trakt: add to history skipped: no external ID available', [
                 'item' => $item->name,
             ]);
@@ -507,14 +509,9 @@ class TraktApi
         // `watched_at` — NOT a single object with a top-level `watched_at` and a
         // null sibling (the historic bug, which Trakt rejected/ignored).
         $watchedAtStr = $watchedAt->format('Y-m-d\TH:i:s.vP');
-        $payload = [];
-        if ($movie !== null) {
-            $movie['watched_at'] = $watchedAtStr;
-            $payload = ['movies' => [$movie]];
-        } elseif ($episode !== null) {
-            $episode['watched_at'] = $watchedAtStr;
-            $payload = ['episodes' => [$episode]];
-        }
+        $key = array_key_first($media);
+        $media[$key]['watched_at'] = $watchedAtStr;
+        $payload = [$key === 'movie' ? 'movies' : 'episodes' => [$media[$key]]];
 
         $response = $this->http->post(
             self::BASE_URL . '/sync/history',
@@ -533,20 +530,38 @@ class TraktApi
     }
 
     /**
-     * Get all ratings for a user from Trakt.
+     * Get ratings for a user from Trakt (one page per call).
+     *
+     * PG-133: like /users/{id}/history, this endpoint is PAGINATED by Trakt.
+     * The historic no-params call silently capped every pull at page 1;
+     * {@see TraktHistorySync::fetchAllRatings()} now walks the pages with
+     * the same stop laws as the history pager. The page/limit pair is sent
+     * on EVERY call (defaults 1/100) with the same server-side cap clamp
+     * the history endpoint carries (limit <= 1000), so both list surfaces
+     * speak one pagination dialect.
      *
      * @param string $username Trakt username
      * @param string $accessToken OAuth access token
      * @param string $type Filter by type: movies, shows, episodes, all (default: all)
+     * @param int $page 1-based page number
+     * @param int $limit Items per page (clamped to Trakt's 1000 maximum)
      *
-     * @return array<mixed> Array of rated items with their ratings
+     * @return array<mixed> Rated items on the requested page
      *
      * @throws TraktApiException|TraktAuthenticationException On API error
      * @since 1.1.0
      */
-    public function getRatings(string $username, string $accessToken, string $type = 'all'): array
-    {
-        $params = [];
+    public function getRatings(
+        string $username,
+        string $accessToken,
+        string $type = 'all',
+        int $page = 1,
+        int $limit = 100
+    ): array {
+        $params = [
+            'page' => $page,
+            'limit' => min($limit, 1000),
+        ];
         if ($type !== 'all') {
             $params['type'] = $type;
         }
@@ -582,46 +597,9 @@ class TraktApi
     {
         $rating = max(1, min(10, $rating)); // Clamp to 1-10
 
-        $movie = null;
-        $episode = null;
+        $media = $this->buildMediaIds($item);
 
-        if ($item->type === 'movie') {
-            $movie = [
-                'ids' => [
-                    'trakt' => $item->metadata['trakt_id'] ?? null,
-                    'slug' => $item->metadata['slug'] ?? null,
-                    'imdb' => $item->metadata['imdb_id'] ?? null,
-                    'tmdb' => $item->metadata['tmdb_id'] ?? null,
-                ],
-            ];
-        } elseif ($item->type === 'episode') {
-            $episode = [
-                'ids' => [
-                    'trakt' => $item->metadata['trakt_id'] ?? null,
-                    'tvdb' => $item->metadata['tvdb_id'] ?? null,
-                    'imdb' => $item->metadata['imdb_id'] ?? null,
-                    'tmdb' => $item->metadata['tmdb_id'] ?? null,
-                ],
-                'season' => $item->metadata['season_number'] ?? 1,
-                'number' => $item->metadata['episode_number'] ?? 1,
-            ];
-        }
-
-        $movieIds = $movie['ids'] ?? [];
-        $episodeIds = $episode['ids'] ?? [];
-        $hasAnyId = (
-            $item->type === 'movie'
-            && ($movieIds['trakt'] ?? $movieIds['imdb'] ?? $movieIds['tmdb'] ?? null) !== null
-        ) || (
-            $item->type === 'episode'
-            && ($episodeIds['trakt']
-                ?? $episodeIds['tvdb']
-                ?? $episodeIds['imdb']
-                ?? $episodeIds['tmdb']
-                ?? null) !== null
-        );
-
-        if (!$hasAnyId) {
+        if ($media === null) {
             $this->logger->debug('Trakt: rating skipped: no external ID available', [
                 'item' => $item->name,
             ]);
@@ -632,13 +610,7 @@ class TraktApi
         }
 
         // Build the ratings item with only the relevant media type (not both)
-        $ratingItem = ['rating' => $rating];
-        if ($movie !== null) {
-            $ratingItem['movie'] = $movie;
-        } elseif ($episode !== null) {
-            $ratingItem['episode'] = $episode;
-        }
-        $payload = ['ratings' => [$ratingItem]];
+        $payload = ['ratings' => [['rating' => $rating] + $media]];
 
         $response = $this->http->post(
             self::BASE_URL . '/sync/ratings',
@@ -669,46 +641,9 @@ class TraktApi
      */
     public function removeRating(MediaItem $item, string $accessToken): array
     {
-        $movie = null;
-        $episode = null;
+        $media = $this->buildMediaIds($item);
 
-        if ($item->type === 'movie') {
-            $movie = [
-                'ids' => [
-                    'trakt' => $item->metadata['trakt_id'] ?? null,
-                    'slug' => $item->metadata['slug'] ?? null,
-                    'imdb' => $item->metadata['imdb_id'] ?? null,
-                    'tmdb' => $item->metadata['tmdb_id'] ?? null,
-                ],
-            ];
-        } elseif ($item->type === 'episode') {
-            $episode = [
-                'ids' => [
-                    'trakt' => $item->metadata['trakt_id'] ?? null,
-                    'tvdb' => $item->metadata['tvdb_id'] ?? null,
-                    'imdb' => $item->metadata['imdb_id'] ?? null,
-                    'tmdb' => $item->metadata['tmdb_id'] ?? null,
-                ],
-                'season' => $item->metadata['season_number'] ?? 1,
-                'number' => $item->metadata['episode_number'] ?? 1,
-            ];
-        }
-
-        $movieIds = $movie['ids'] ?? [];
-        $episodeIds = $episode['ids'] ?? [];
-        $hasAnyId = (
-            $item->type === 'movie'
-            && ($movieIds['trakt'] ?? $movieIds['imdb'] ?? $movieIds['tmdb'] ?? null) !== null
-        ) || (
-            $item->type === 'episode'
-            && ($episodeIds['trakt']
-                ?? $episodeIds['tvdb']
-                ?? $episodeIds['imdb']
-                ?? $episodeIds['tmdb']
-                ?? null) !== null
-        );
-
-        if (!$hasAnyId) {
+        if ($media === null) {
             $this->logger->debug('Trakt: rating removal skipped: no external ID available', [
                 'item' => $item->name,
             ]);
@@ -723,12 +658,8 @@ class TraktApi
         // "DELETE uses query params" comment and the $params/$ids/$type block
         // it described were dead code: the payload below is what is sent.
         // Build the remove payload with only the relevant media type (not both)
-        $removePayload = [];
-        if ($movie !== null) {
-            $removePayload['movies'] = [$movie];
-        } elseif ($episode !== null) {
-            $removePayload['episodes'] = [$episode];
-        }
+        $key = array_key_first($media);
+        $removePayload = [$key === 'movie' ? 'movies' : 'episodes' => [$media[$key]]];
 
         $response = $this->http->post(
             self::BASE_URL . '/sync/ratings/remove',

@@ -686,6 +686,58 @@ final class TraktApiTest extends TestCase
         $this->assertSame(['added' => false, 'skipped' => true], $result);
         $this->assertSame('', $http->lastMethod, 'no HTTP may be attempted for an ID-less item');
     }
+
+    // --- getRatings pagination wire (PG-133) ---------------------------------
+
+    /**
+     * Trakt paginates /users/{id}/ratings like /users/{id}/history; a puller
+     * that cannot request page N can only ever import page 1. The endpoint
+     * must send the canonical page/limit pair on every call, with the same
+     * default (1/100) and the same server-side cap clamp the history
+     * endpoint carries (limit is min($limit, 1000)).
+     */
+    public function testGetRatingsSendsDefaultPageAndLimit(): void
+    {
+        $http = new MockHttpClient([[]]);
+        $api = new TraktApi($http, self::CLIENT_ID, self::CLIENT_SECRET, new NullLogger());
+
+        $api->getRatings('testuser', 'access-token');
+
+        $this->assertStringContainsString('page=1', $http->lastUrl);
+        $this->assertStringContainsString('limit=100', $http->lastUrl);
+    }
+
+    public function testGetRatingsForwardsExplicitPageAndLimit(): void
+    {
+        $http = new MockHttpClient([[]]);
+        $api = new TraktApi($http, self::CLIENT_ID, self::CLIENT_SECRET, new NullLogger());
+
+        $api->getRatings('testuser', 'access-token', 'all', 3, 50);
+
+        $this->assertStringContainsString('page=3', $http->lastUrl);
+        $this->assertStringContainsString('limit=50', $http->lastUrl);
+    }
+
+    public function testGetRatingsClampsLimitToTraktMaximum(): void
+    {
+        $http = new MockHttpClient([[]]);
+        $api = new TraktApi($http, self::CLIENT_ID, self::CLIENT_SECRET, new NullLogger());
+
+        $api->getRatings('testuser', 'access-token', 'all', 1, 5000);
+
+        $this->assertStringContainsString('limit=1000', $http->lastUrl);
+    }
+
+    public function testGetRatingsTypeFilterStillSurvivesPagination(): void
+    {
+        $http = new MockHttpClient([[]]);
+        $api = new TraktApi($http, self::CLIENT_ID, self::CLIENT_SECRET, new NullLogger());
+
+        $api->getRatings('testuser', 'access-token', 'movies', 2, 100);
+
+        $this->assertStringContainsString('type=movies', $http->lastUrl);
+        $this->assertStringContainsString('page=2', $http->lastUrl);
+    }
 }
 
 /**
