@@ -315,7 +315,7 @@ class TraktApi
         );
 
         if (!$hasAnyId) {
-            $this->logger->debug('Trakt scrobble skipped: no external ID available', [
+            $this->logger->debug('Trakt: scrobble skipped: no external ID available', [
                 'action' => $action,
                 'item' => $item->name,
             ]);
@@ -330,7 +330,7 @@ class TraktApi
         // (/scrobble/start|pause|stop) — NOT the body — and the body carries
         // EITHER a `movie` OR an `episode` object plus `progress`. Sending the
         // action in the body or a null sibling key is rejected/ignored by Trakt,
-        // and posting to /scrobble/movie|episode (the previous behaviour) 404s.
+        // and posting to /scrobble/movie|episode (the previous behavior) 404s.
         $payload = ['progress' => $progress];
         if ($movie !== null) {
             $payload['movie'] = $movie;
@@ -344,7 +344,7 @@ class TraktApi
             $this->apiHeaders($accessToken)
         );
 
-        $this->logger->debug('Trakt scrobble response', [
+        $this->logger->debug('Trakt: scrobble response', [
             'action' => $action,
             'item' => $item->name,
             'response' => $response,
@@ -357,7 +357,7 @@ class TraktApi
     }
 
     /**
-     * Get watched history for a user (for Trakt → Phlix sync).
+     * Get watched history for a user (for Trakt→Phlix sync).
      *
      * Hits the USER HISTORY endpoint `/users/{id}/history`, whose entries are
      * flat `{id, watched_at, action, type, movie|episode[, show]}` objects —
@@ -402,7 +402,7 @@ class TraktApi
             $this->apiHeaders($accessToken)
         );
 
-        $this->logger->debug('Trakt watched history response', [
+        $this->logger->debug('Trakt: watched history response', [
             'username' => $username,
             'page' => $page,
             'count' => count($response),
@@ -412,7 +412,7 @@ class TraktApi
     }
 
     /**
-     * Add a media item to Trakt watched history (for Phlix → Trakt sync).
+     * Add a media item to Trakt watched history (for Phlix→Trakt sync).
      *
      * @param MediaItem $item Media item that was watched
      * @param \DateTimeImmutable $watchedAt When the item was watched
@@ -470,7 +470,7 @@ class TraktApi
             $this->apiHeaders($accessToken)
         );
 
-        $this->logger->debug('Trakt add to history response', [
+        $this->logger->debug('Trakt: add to history response', [
             'item' => $item->name,
             'watched_at' => $watchedAt->format('c'),
             'response' => $response,
@@ -505,7 +505,7 @@ class TraktApi
             $this->apiHeaders($accessToken)
         );
 
-        $this->logger->debug('Trakt ratings response', [
+        $this->logger->debug('Trakt: ratings response', [
             'username' => $username,
             'type' => $type,
             'count' => count($response),
@@ -570,7 +570,7 @@ class TraktApi
         );
 
         if (!$hasAnyId) {
-            $this->logger->debug('Trakt rating skipped: no external ID available', [
+            $this->logger->debug('Trakt: rating skipped: no external ID available', [
                 'item' => $item->name,
             ]);
             return [
@@ -594,7 +594,7 @@ class TraktApi
             $this->apiHeaders($accessToken)
         );
 
-        $this->logger->debug('Trakt add rating response', [
+        $this->logger->debug('Trakt: add rating response', [
             'item' => $item->name,
             'rating' => $rating,
             'response' => $response,
@@ -657,7 +657,7 @@ class TraktApi
         );
 
         if (!$hasAnyId) {
-            $this->logger->debug('Trakt rating removal skipped: no external ID available', [
+            $this->logger->debug('Trakt: rating removal skipped: no external ID available', [
                 'item' => $item->name,
             ]);
             return [
@@ -684,7 +684,7 @@ class TraktApi
             $this->apiHeaders($accessToken)
         );
 
-        $this->logger->debug('Trakt remove rating response', [
+        $this->logger->debug('Trakt: remove rating response', [
             'item' => $item->name,
             'response' => $response,
         ]);

@@ -16,7 +16,7 @@ namespace Phlix\Plugins\Scrobbler\Trakt;
  * - USER-SCOPED: entries bound to whatever notion of "user" the host already
  *   has (PHP session, JWT subject, DB row keyed by user UUID, …). The default
  *   {@see SessionTraktOAuthStateStore} uses `$_SESSION`, matching the historic
- *   behaviour but lifted out into a swappable seam so the controller becomes
+ *   behavior but lifted out into a swappable seam so the controller becomes
  *   unit-testable and so production deployments that run under Workerman
  *   (where `$_SESSION` is not request-scoped) keep working.
  * - STATE-KEYED SERVER STORE: {@see DbTraktOAuthStateStore} keys rows by the

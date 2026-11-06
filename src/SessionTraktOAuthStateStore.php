@@ -7,7 +7,7 @@ namespace Phlix\Plugins\Scrobbler\Trakt;
 /**
  * `$_SESSION`-backed implementation of {@see TraktOAuthStateStore}.
  *
- * Retains the historic per-session storage behaviour of the Trakt
+ * Retains the historic per-session storage behavior of the Trakt
  * OAuth flow while honoring the new one-shot contract: {@see consume()}
  * unsets the entry before returning it so a captured state value
  * cannot be replayed.

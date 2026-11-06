@@ -12,10 +12,10 @@ use Psr\Log\NullLogger;
 /**
  * Handles two-way watch history sync between Trakt and Phlix.
  *
- * - Trakt → Phlix: Pulls Trakt watched history on schedule and writes local
+ * - Trakt→Phlix: Pulls Trakt watched history on schedule and writes local
  *   WatchHistory rows: new items, plus existing sub-threshold items, which
  *   are overwritten with a completed row (existing ≥ 90% rows are kept).
- * - Phlix → Trakt: Pushes local WatchHistory entries (≥ 90%) to Trakt
+ * - Phlix→Trakt: Pushes local WatchHistory entries (≥ 90%) to Trakt
  *   after PlaybackStopped events where completion threshold was met.
  *
  * @package Phlix\Plugins\Scrobbler\Trakt
@@ -107,7 +107,7 @@ class TraktHistorySync
     }
 
     /**
-     * Pull Trakt history → Phlix local history for one profile.
+     * Pull watched history from Trakt into Phlix local history for one profile.
      *
      * Transient API failures are logged and yield a 0-count return WITHOUT
      * touching local state; an {@see TraktAuthenticationException} is
@@ -452,7 +452,7 @@ class TraktHistorySync
         }
 
         // The LIKE pattern neutralises metacharacters in the REMOTE-supplied
-        // title (Trakt payload): MySQL's LIKE honours % and _ inside patterns,
+        // title (Trakt payload): MySQL's LIKE honors % and _ inside patterns,
         // so an unescaped wildcard in a title would broaden the fuzzy lookup
         // and could bind the wrong local item. The value still travels as a
         // bound parameter, never interpolated into the SQL string.
@@ -580,7 +580,7 @@ class TraktHistorySync
     }
 
     /**
-     * Sync ratings from Trakt → Phlix.
+     * Sync ratings from Trakt→Phlix.
      *
      * Pulls ratings from Trakt and persists them to the canonical
      * user_item_data.rating column for matched items.
@@ -800,7 +800,7 @@ class TraktHistorySync
     }
 
     /**
-     * Sync a rating from Phlix → Trakt.
+     * Sync a rating from Phlix→Trakt.
      *
      * Pushes a local rating to Trakt for a specific media item.
      *

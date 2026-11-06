@@ -24,8 +24,8 @@
             "default": "",
             "required": false,
             "tier": "advanced",
-            "label": "Trakt Username",
-            "description": "Display-only: the Trakt account Phlix is linked to (set during authorization)."
+            "label": "Trakt username",
+            "description": "The Trakt account Phlix is linked to; set automatically during authorization. The plugin stays idle until it is present."
         },
         "access_token": {
             "type": "string",
@@ -33,7 +33,7 @@
             "secret": true,
             "required": false,
             "tier": "advanced",
-            "label": "Access Token",
+            "label": "Access token",
             "description": "Obtained automatically when you authorize Phlix with Trakt — you do not enter this by hand. Create an API app only if you self-host credentials.",
             "link": "https://app.trakt.tv/settings/apps/api/new",
             "link_text": "Trakt API applications"
@@ -44,7 +44,7 @@
             "secret": true,
             "required": false,
             "tier": "advanced",
-            "label": "Refresh Token",
+            "label": "Refresh token",
             "description": "Set automatically during authorization; used to renew the access token. Not entered by hand."
         },
         "expires_at": {
@@ -53,7 +53,7 @@
             "secret": true,
             "required": false,
             "tier": "advanced",
-            "label": "Token Expiry",
+            "label": "Token expiry",
             "description": "Unix timestamp when the access token expires. Managed automatically."
         },
         "sync_enabled": {
@@ -61,8 +61,8 @@
             "default": true,
             "required": false,
             "tier": "advanced",
-            "label": "Enable library sync",
-            "description": "Sync watched state with Trakt. Optional; default on."
+            "label": "Enable history sync",
+            "description": "Pulls Trakt watch history into Phlix and lets finished Phlix items be pushed to Trakt. Pushing completions additionally requires scrobbling to be enabled. Optional; default on."
         },
         "sync_interval_minutes": {
             "type": "integer",
@@ -70,7 +70,7 @@
             "required": false,
             "tier": "advanced",
             "label": "Sync interval (minutes)",
-            "description": "How often to sync with Trakt. Optional; default 30."
+            "description": "How often the scheduled Trakt→Phlix history pull runs. Optional; default 30."
         },
         "scrobble_enabled": {
             "type": "boolean",

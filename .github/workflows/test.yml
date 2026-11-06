@@ -5,6 +5,12 @@ on:
     branches: [master, main]
   pull_request:
 
+# Least privilege: both jobs only read the repository. Coverage and audit
+# results leave via their own tokens (Codacy, the audit script), never via
+# the default GITHUB_TOKEN, so no write scope is granted anywhere.
+permissions:
+  contents: read
+
 jobs:
   phpunit:
     runs-on: ubuntu-26.04
@@ -14,7 +20,7 @@ jobs:
         # phlix-shared requires PHP ^8.3, so the matrix matches.
         php: ['8.3', '8.4']
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
 
       - name: Setup PHP ${{ matrix.php }}
         uses: shivammathur/setup-php@4424c9aab975b57bd706ee5a39c6b4334d6e4f60
@@ -72,7 +78,7 @@ jobs:
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v6
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
 
       - name: Setup PHP
         uses: shivammathur/setup-php@4424c9aab975b57bd706ee5a39c6b4334d6e4f60

@@ -22,15 +22,15 @@ use Phlix\Admin\SettingsRepository;
  * The credentials were loaded in TWO places that disagreed (in the host
  * repo, where this class was first written):
  *
- * | site | behaviour before |
+ * | site | behavior before |
  * |---|---|
  * | `TraktOAuthController::loadConfig()` | included the file, then overlaid `server_settings` |
  * | `TraktPlugin::loadConfig()` | raw `include` of the file, **no overlay** |
  *
- * That is read-path class (d) in `plan_settings.md` §0.4 — a raw `include`
- * cannot see a saved override. The user-visible consequence was a split brain:
+ * A raw `include` cannot see a saved override, so the two paths could never
+ * agree. The user-visible consequence was a split brain:
  * an operator who entered their credentials in the admin Settings page could
- * complete the OAuth *connect* flow, because the controller honoured them, and
+ * complete the OAuth *connect* flow, because the controller honored them, and
  * then watch history sync silently do nothing forever, because
  * `TraktPlugin::initApi()` read only the file and left `$this->api` null — at
  * which point `isConfigured()` is false and every tick is a no-op. No error is

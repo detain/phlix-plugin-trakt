@@ -25,10 +25,12 @@ use Workerman\MySQL\Connection;
  * PlaybackStopped events and submits scrobble data to Trakt.tv using the
  * 3-state scrobble protocol (start/pause/stop; resume re-sends "start").
  *
- * Also handles two-way watch history sync (both directions honour the
- * master `enabled` switch — with it off nothing scrobbles and nothing pulls):
- * - Phlix → Trakt: On PlaybackStopped with ≥ 90% completion
- * - Trakt → Phlix: On scheduled sync (via TraktHistorySync)
+ * Also handles two-way watch history sync (both directions honor the
+ * master `enabled` switch and the `sync_enabled` toggle; the event push
+ * fires from inside the scrobble path, so it additionally requires
+ * `scrobble_enabled` — see onPlaybackStopped()):
+ * - Phlix→Trakt: On PlaybackStopped with ≥ 90% completion
+ * - Trakt→Phlix: On scheduled sync (via TraktHistorySync)
  *
  * OAuth token lifecycle: before every scrobble the plugin calls
  * {@see TraktPlugin::ensureFreshToken()}, which refreshes an expired access
@@ -374,7 +376,7 @@ class TraktPlugin implements LifecycleInterface, ConfigurableInterface
     }
 
     /**
-     * Run a Trakt → Phlix watched-history pull for the given profile.
+     * Run a Trakt→Phlix watched-history pull for the given profile.
      *
      * On-demand entry point for the resident-worker pull-sync Timer armed in
      * the host's `start.php`. It mirrors the push path {@see self::syncToTrakt()}:
@@ -494,7 +496,7 @@ class TraktPlugin implements LifecycleInterface, ConfigurableInterface
     /**
      * Handle playback stop — submit scrobble stop to Trakt.
      *
-     * Also triggers Phlix → Trakt sync if the item reached ≥ 90% completion.
+     * Also triggers Phlix→Trakt sync if the item reached ≥ 90% completion.
      *
      * @param PlaybackStopped $event The playback stopped event
      *
@@ -707,7 +709,7 @@ class TraktPlugin implements LifecycleInterface, ConfigurableInterface
         try {
             $api->scrobbleStart($mediaItem, $progressPercent, $accessToken);
 
-            $this->logger->info('Trakt scrobble start submitted', [
+            $this->logger->info('Trakt: scrobble start submitted', [
                 'title' => $mediaItem->name,
                 'progress' => $progressPercent,
             ]);
@@ -716,7 +718,7 @@ class TraktPlugin implements LifecycleInterface, ConfigurableInterface
                 try {
                     $api->scrobbleStart($mediaItem, $progressPercent, $this->settings->accessToken ?? '');
 
-                    $this->logger->info('Trakt scrobble start submitted after refresh', [
+                    $this->logger->info('Trakt: scrobble start submitted after refresh', [
                         'title' => $mediaItem->name,
                         'progress' => $progressPercent,
                     ]);
@@ -781,7 +783,7 @@ class TraktPlugin implements LifecycleInterface, ConfigurableInterface
         try {
             $api->scrobbleStop($mediaItem, $progressPercent, $accessToken);
 
-            $this->logger->info('Trakt scrobble stop submitted', [
+            $this->logger->info('Trakt: scrobble stop submitted', [
                 'title' => $mediaItem->name,
                 'progress' => $progressPercent,
             ]);
@@ -790,7 +792,7 @@ class TraktPlugin implements LifecycleInterface, ConfigurableInterface
                 try {
                     $api->scrobbleStop($mediaItem, $progressPercent, $this->settings->accessToken ?? '');
 
-                    $this->logger->info('Trakt scrobble stop submitted after refresh', [
+                    $this->logger->info('Trakt: scrobble stop submitted after refresh', [
                         'title' => $mediaItem->name,
                         'progress' => $progressPercent,
                     ]);
@@ -852,7 +854,7 @@ class TraktPlugin implements LifecycleInterface, ConfigurableInterface
         try {
             $api->scrobblePause($mediaItem, $progressPercent, $accessToken);
 
-            $this->logger->info('Trakt scrobble pause submitted', [
+            $this->logger->info('Trakt: scrobble pause submitted', [
                 'title' => $mediaItem->name,
                 'progress' => $progressPercent,
             ]);
@@ -861,7 +863,7 @@ class TraktPlugin implements LifecycleInterface, ConfigurableInterface
                 try {
                     $api->scrobblePause($mediaItem, $progressPercent, $this->settings->accessToken ?? '');
 
-                    $this->logger->info('Trakt scrobble pause submitted after refresh', [
+                    $this->logger->info('Trakt: scrobble pause submitted after refresh', [
                         'title' => $mediaItem->name,
                         'progress' => $progressPercent,
                     ]);
@@ -1513,7 +1515,7 @@ class TraktPlugin implements LifecycleInterface, ConfigurableInterface
      * Workerman\Timer is unavailable (unit tests, CLI), when the plugin's
      * master `enabled` switch is off, or when two-way sync is disabled.
      *
-     * The master switch must be honoured HERE at arm time and again per tick
+     * The master switch must be honored HERE at arm time and again per tick
      * ({@see self::runScheduledSync()}): the host boots this plugin from its
      * own plugin-registry enabled column and never consults the plugin's
      * `enabled` SETTING, so the plugin is the sole enforcer of what
@@ -1609,7 +1611,7 @@ class TraktPlugin implements LifecycleInterface, ConfigurableInterface
             // Use the default profile for now (per-profile sync is future work).
             $this->pullHistoryWithAuthRecovery(self::DEFAULT_PROFILE_ID);
         } catch (\Throwable $e) {
-            $this->logger->warning('Trakt periodic sync failed', [
+            $this->logger->warning('Trakt: periodic sync failed', [
                 'error' => $e->getMessage(),
             ]);
         }

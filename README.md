@@ -15,8 +15,11 @@ Connects a Phlix server to your Trakt.tv account:
 - **Two-way history sync** — PULLS your Trakt watch history into Phlix on the
   configurable `sync_interval_minutes` interval; PUSHES Phlix completions back
   to Trakt event-driven (on playback stop at ≥ 90%), never on the interval.
-  Pushing completions rides on the same toggle as scrobbles: with
-  `scrobble_enabled` off, nothing is pushed even while pull sync stays on.
+  The push fires from inside the playback-stop scrobble path, so it needs
+  **both** toggles: with `scrobble_enabled` off nothing is pushed even while
+  pull sync stays on, and with `sync_enabled` off neither pulls nor pushes
+  happen while scrobbles alone still flow. The full gate matrix is in
+  [Settings](#settings).
 - Authenticates via **OAuth**, refreshing tokens automatically.
 
 It subscribes to `phlix.playback.started`, `phlix.playback.paused`,
@@ -41,13 +44,23 @@ php bin/phlix plugin:install https://github.com/detain/phlix-plugin-trakt
 | Setting | Type | Required | Secret | Tier | Default | Description |
 |---|---|---|---|---|---|---|
 | `enabled` | boolean | No | No | `standard` | `false` | Master on/off for Trakt scrobbling and sync. Optional; default off. |
-| `username` | string | No | No | `advanced` | `""` | Display-only: the Trakt account Phlix is linked to (set during authorization). |
+| `username` | string | No | No | `advanced` | `""` | The Trakt account Phlix is linked to; set automatically during authorization. The plugin stays idle until it is present. |
 | `access_token` | string | No | Yes | `advanced` | `null` | Obtained automatically when you authorize Phlix with Trakt — you do not enter this by hand. Create an [API app](https://app.trakt.tv/settings/apps/api/new) only if you self-host credentials. |
 | `refresh_token` | string | No | Yes | `advanced` | `null` | Set automatically during authorization; used to renew the access token. Not entered by hand. |
 | `expires_at` | integer | No | Yes | `advanced` | `null` | Unix timestamp when the access token expires. Managed automatically. |
-| `sync_enabled` | boolean | No | No | `advanced` | `true` | Sync watched state with Trakt. Optional; default on. |
-| `sync_interval_minutes` | integer | No | No | `advanced` | `30` | How often to sync with Trakt. Optional; default 30. |
+| `sync_enabled` | boolean | No | No | `advanced` | `true` | Pulls Trakt watch history into Phlix and lets finished Phlix items be pushed to Trakt. Pushing completions additionally requires scrobbling to be enabled. Optional; default on. |
+| `sync_interval_minutes` | integer | No | No | `advanced` | `30` | How often the scheduled Trakt→Phlix history pull runs. Optional; default 30. |
 | `scrobble_enabled` | boolean | No | No | `advanced` | `true` | Report play/pause/stop to Trakt as you watch. Optional; default on. |
+
+Which toggles gate which behavior (all three rows also require the master
+`enabled` switch and completed authorization — tokens plus username, which
+together are the plugin's configured state):
+
+| Behavior | Needs `scrobble_enabled` | Needs `sync_enabled` |
+|---|---|---|
+| Scrobble start / pause / resume / stop | Yes | — |
+| Scheduled and on-demand history pull (Trakt→Phlix) | — | Yes |
+| Completion push on stop at ≥ 90% (Phlix→Trakt) | **Yes** | **Yes** |
 
 > **`access_token` / `refresh_token` / `expires_at` are set automatically via the
 > Trakt authorization (OAuth) flow — you never enter them by hand.** Create an API
@@ -69,7 +82,7 @@ php bin/phlix plugin:install https://github.com/detain/phlix-plugin-trakt
 Trakt throttles by request rate and answers HTTP 429 with a
 `Retry-After` hint. The plugin parses it and surfaces it as
 `TraktRateLimitException::$retryAfter`, but **deliberately does not
-auto-retry** (review trakt__secaudit #6 / trakt__srphp m11): a scrobble
+auto-retry**: a scrobble
 that hits 429 is logged and dropped, and the next history pull simply
 waits for its regular tick — a blind deferred retry against a sustained
 rate limiter would queue load instead of relieving it. For the same

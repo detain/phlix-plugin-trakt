@@ -21,7 +21,7 @@ use PHPUnit\Framework\TestCase;
  * third-party public service answering correctly. On 2026-08-07 httpbin.org's
  * edge answered `GET /status/422` with a 502, and again with 503 and hard
  * timeouts through the following hours. The client reported the status it
- * actually received - which is correct behaviour - and the suite read that as a
+ * actually received - which is correct behavior - and the suite read that as a
  * defect, turning master red on a schedule nobody controls. Only
  * testParseResponseWithErrorMessage asserts a *specific* status, so it was the
  * only test able to notice; the sibling error tests assert just the exception

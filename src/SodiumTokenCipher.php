@@ -79,13 +79,21 @@ final class SodiumTokenCipher implements TokenCipher
     /**
      * Decode a config key string into raw 32 bytes.
      *
+     * Key entropy is the operator's responsibility: the code below only checks
+     * length and encoding, never randomness, so a 32-byte human passphrase
+     * would be accepted exactly like a strong key. Generate the key with
+     * `random_bytes(SODIUM_CRYPTO_SECRETBOX_KEYBYTES)` (or
+     * `sodium_crypto_secretbox_keygen()`) and store it in any accepted form;
+     * do not invent one by hand.
+     *
      * @param string $rawKey The configured key (raw/base64/hex)
      *
      * @return string|null Raw 32-byte key, or null when it cannot be decoded
      */
     private static function decodeKey(string $rawKey): ?string
     {
-        // Already raw 32 bytes.
+        // Already raw 32 bytes. Accepted on length alone — see the entropy
+        // note above before ever taking this branch with a hand-typed key.
         if (strlen($rawKey) === SODIUM_CRYPTO_SECRETBOX_KEYBYTES) {
             return $rawKey;
         }
