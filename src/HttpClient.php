@@ -87,7 +87,7 @@ class HttpClient implements HttpClientInterface
     private function request(string $method, string $url, array $data, array $headers): array
     {
         $requestHeaders = [
-            'User-Agent' => 'PhlixMediaServer/1.0',
+            'User-Agent' => 'phlix/trakt (+https://github.com/detain/phlix-plugin-trakt)',
             'Content-Type' => 'application/json',
             'Accept' => 'application/json',
         ];

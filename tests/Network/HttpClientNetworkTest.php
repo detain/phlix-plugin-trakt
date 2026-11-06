@@ -147,7 +147,7 @@ final class HttpClientNetworkTest extends TestCase
         $this->assertIsArray($response);
         // Check User-Agent header is sent
         $headers = $response['headers'];
-        $this->assertStringContainsString('PhlixMediaServer', $headers['User-Agent'] ?? '');
+        $this->assertStringContainsString('phlix/trakt', $headers['User-Agent'] ?? '');
         $this->assertSame('application/json', $headers['Accept'] ?? '');
         $this->assertSame('application/json', $headers['Content-Type'] ?? '');
     }
