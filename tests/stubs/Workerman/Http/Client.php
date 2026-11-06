@@ -60,10 +60,19 @@ class Client
     public static ?array $lastConfig = null;
 
     /**
+     * Number of Client instances constructed since the last reset().
+     *
+     * PG-125 pooling proof: the transport must build one client per TLS peer
+     * host and reuse it across requests, never one per request.
+     */
+    public static int $constructs = 0;
+
+    /**
      * @param array<string, mixed> $config Client config (timeout, context, ...)
      */
     public function __construct(array $config = [])
     {
+        self::$constructs++;
         self::$lastConfig = $config;
     }
 
@@ -168,6 +177,7 @@ class Client
         self::$error = null;
         self::$lastRequest = null;
         self::$lastConfig = null;
+        self::$constructs = 0;
         self::$realIo = false;
         self::$neverRespond = false;
     }

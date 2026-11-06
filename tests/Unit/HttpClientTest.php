@@ -351,18 +351,20 @@ final class HttpClientTest extends TestCase
 
     // --- transport ---------------------------------------------------------
 
-    public function testEventLoopRunningReturnsFalseInTestEnvironment(): void
+    public function testAsyncTransportRefusedInPlainTestEnvironment(): void
     {
         $client = new HttpClient();
 
-        // Use reflection to test the private method
-        $reflection = new \ReflectionClass($client);
-        $method = $reflection->getMethod('eventLoopRunning');
+        // Use reflection to test the private gate. PG-125 renamed
+        // eventLoopRunning() to asyncTransportUsable() and moved the
+        // cooperativity question from a bare loop marker to the host
+        // coroutine-context helpers.
+        $method = (new \ReflectionClass($client))->getMethod('asyncTransportUsable');
         $method->setAccessible(true);
 
-        // In PHPUnit/test environment, no Workerman event loop is running
-        $result = $method->invoke($client);
-        $this->assertFalse($result);
+        // In the PHPUnit/test environment WorkerContext reports no running
+        // loop and no coroutine, so the async transport is refused.
+        $this->assertFalse($method->invoke($client, 'https://api.trakt.tv/users/me'));
     }
 
     public function testInvalidUrlThrowsException(): void

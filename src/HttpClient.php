@@ -4,6 +4,9 @@ declare(strict_types=1);
 
 namespace Phlix\Plugins\Scrobbler\Trakt;
 
+use Phlix\Common\Http\EventLoopTls;
+use Phlix\Common\Runtime\WorkerContext;
+
 /**
  * HTTP client implementation for Trakt API requests.
  *
@@ -12,6 +15,19 @@ namespace Phlix\Plugins\Scrobbler\Trakt;
  */
 class HttpClient implements HttpClientInterface
 {
+    /**
+     * Pooled async HTTP clients, keyed by TLS peer host.
+     *
+     * PG-125: the client used to be constructed per request (paying the pool
+     * setup each time) while now being reused — one instance per distinct
+     * peer host, because the strict TLS context pins `peer_name` at
+     * construction and the plugin talks to more than one Trakt host
+     * (api.trakt.tv for the API, login.trakt.tv for OAuth).
+     *
+     * @var array<string, \Workerman\Http\Client>
+     */
+    private array $asyncClients = [];
+
     /**
      * @param int $timeout Request timeout in seconds
      */
@@ -43,12 +59,16 @@ class HttpClient implements HttpClientInterface
     /**
      * Perform an HTTP request.
      *
-     * Non-blocking by default: inside a running Workerman event loop this uses
-     * the cooperative-wait {@see \Workerman\Http\Client} pattern (see phlix-server
-     * CLAUDE.md "Async Patterns") so the resident worker keeps serving other
-     * connections while the Trakt round-trip is in flight. Outside an event loop
-     * (unit tests, CLI, single-shot CGI) it falls back to a blocking cURL request
-     * — there is no loop to yield to there, so blocking is both safe and required.
+     * Transport choice follows the host's law (phlix-server
+     * src/Hub/HttpClient.php, src/Server/Integrations/Trakt/HttpClient.php):
+     * the cooperative-wait async {@see \Workerman\Http\Client} path is valid
+     * ONLY when a Workerman event loop is running AND the caller executes
+     * inside a coroutine AND the URL is not https-under-the-Swoole-loop
+     * (where async TLS reads stall). Everywhere else — unit tests, CLI, and
+     * the plugin's own non-coroutine Timer callbacks — a blocking cURL
+     * request is both safe and required: there is nothing to yield to, so a
+     * spinning async wait could only ever false-timeout (review trakt srphp
+     * #1, PG-125).
      *
      * @param string $method HTTP method
      * @param string $url Full URL
@@ -75,7 +95,7 @@ class HttpClient implements HttpClientInterface
             $requestHeaders[$key] = $value;
         }
 
-        if ($this->eventLoopRunning()) {
+        if ($this->asyncTransportUsable($url)) {
             return $this->requestAsync($method, $url, $data, $requestHeaders);
         }
 
@@ -83,28 +103,84 @@ class HttpClient implements HttpClientInterface
     }
 
     /**
-     * Whether a Workerman event loop is running so async I/O can yield.
+     * Whether the cooperative-wait async transport can actually complete here.
      *
-     * The async {@see \Workerman\Http\Client} path only makes sense when the
-     * cooperative wait has an event loop to yield back to. Under PHPUnit/CLI
-     * neither the client class nor the loop exist, so callers take the blocking
-     * cURL fallback instead.
+     * PG-125 (review trakt__srphp #1 [Critical]): the old gate asked only
+     * whether {@see \Workerman\Worker}::$globalEvent existed — but that
+     * marker is set on every live server worker and says nothing about
+     * cooperativity. Every scrobble and pull this plugin makes runs from a
+     * Workerman Timer callback that owns the worker thread; while such a
+     * callback spins waiting for socket callbacks, no socket callback can
+     * fire, so every production round trip died at its deadline with a false
+     * timeout while a perfectly good cURL fallback sat unreachable.
      *
-     * @return bool
+     * The gate now mirrors the host's: async only inside a coroutine with a
+     * running loop (WorkerContext), and never for https while the Swoole
+     * event loop drives the process (EventLoopTls — client-side TLS reads
+     * stall there; cURL's own blocking transport is unaffected). The host
+     * helpers are authoritative when the plugin runs inside the server
+     * process; when they are absent (standalone CLI, older host) there is no
+     * trustworthy coroutine context, so the safe default is the blocking
+     * transport — a slow request beats a permanently false-timed-out one.
      */
-    private function eventLoopRunning(): bool
+    private function asyncTransportUsable(string $url): bool
     {
-        return class_exists(\Workerman\Http\Client::class)
-            && class_exists(\Workerman\Worker::class)
-            && \Workerman\Worker::$globalEvent !== null;
+        if (!class_exists(\Workerman\Http\Client::class)) {
+            return false;
+        }
+
+        if (!class_exists(WorkerContext::class) || !class_exists(EventLoopTls::class)) {
+            return false;
+        }
+
+        if (EventLoopTls::requiresBlockingCurl($url)) {
+            return false;
+        }
+
+        return WorkerContext::isEventLoopRunning() && WorkerContext::inCoroutine();
+    }
+
+    /**
+     * Reuse one async client per TLS peer host (lazy, PG-125).
+     *
+     * The strict TLS context carries a pinned `peer_name`, so the pool key is
+     * the host: every request to the same peer reuses the same client (and
+     * its connection pool) instead of paying per-request construction, while
+     * a second peer (api.trakt.tv vs login.trakt.tv) still verifies against
+     * its own name.
+     *
+     * @param string $host TLS peer host taken from the request URL
+     */
+    private function asyncClient(string $host): \Workerman\Http\Client
+    {
+        if (!isset($this->asyncClients[$host])) {
+            $this->asyncClients[$host] = new \Workerman\Http\Client([
+                'timeout' => $this->timeout,
+                'context' => [
+                    'ssl' => [
+                        'verify_peer' => true,
+                        'verify_peer_name' => true,
+                        'allow_self_signed' => false,
+                        'SNI_enabled' => true,
+                        'peer_name' => $host,
+                    ],
+                ],
+            ]);
+        }
+
+        return $this->asyncClients[$host];
     }
 
     /**
      * Non-blocking request via the cooperative-wait Workerman HTTP client.
      *
-     * Fires the request on the event loop and then yields (1 ms sleeps, which
-     * the Swoole runtime hook turns into cooperative yields) until a success or
-     * error callback fires or the timeout elapses — never a hard blocking read.
+     * Only reachable through {@see self::asyncTransportUsable()} — i.e. from
+     * a coroutine inside a running event loop, where the wait below yields
+     * (1 ms sleeps, which the Swoole runtime hook turns into cooperative
+     * yields) and socket callbacks can genuinely fire. The deadline is driven
+     * by wall-clock time, never by counting sleep iterations (PG-125:
+     * `waited += 0.001` under-counted once a yield took longer than the
+     * nominal 1 ms, so the reported timeout lied).
      *
      * @param string $method HTTP method
      * @param string $url Full URL
@@ -137,18 +213,7 @@ class HttpClient implements HttpClientInterface
             throw new TraktApiException('Refusing non-HTTPS async request to ' . $url);
         }
 
-        $client = new \Workerman\Http\Client([
-            'timeout' => $this->timeout,
-            'context' => [
-                'ssl' => [
-                    'verify_peer' => true,
-                    'verify_peer_name' => true,
-                    'allow_self_signed' => false,
-                    'SNI_enabled' => true,
-                    'peer_name' => $host,
-                ],
-            ],
-        ]);
+        $client = $this->asyncClient($host);
 
         $state = ['done' => false, 'response' => null, 'error' => null];
 
@@ -172,12 +237,12 @@ class HttpClient implements HttpClientInterface
 
         $client->request($url, $options);
 
-        // Cooperative wait: yields to the event loop so other tasks proceed.
-        $waited = 0.0;
-        $maxWait = (float) $this->timeout;
-        while (!$state['done'] && $waited < $maxWait) {
+        // Cooperative wait against a wall-clock deadline: yields to the event
+        // loop so other tasks proceed, and measures real elapsed time rather
+        // than tallying sleep iterations (PG-125).
+        $deadline = microtime(true) + (float) $this->timeout;
+        while (!$state['done'] && microtime(true) < $deadline) {
             usleep(1000);
-            $waited += 0.001;
         }
 
         if ($state['error'] !== null) {

@@ -4,13 +4,14 @@ declare(strict_types=1);
 
 namespace Phlix\Tests\Unit\Plugins\Scrobbler\Trakt;
 
+use Phlix\Common\Http\EventLoopTls;
+use Phlix\Common\Runtime\WorkerContext;
 use Phlix\Plugins\Scrobbler\Trakt\HttpClient;
 use Phlix\Plugins\Scrobbler\Trakt\TraktApiException;
 use Phlix\Plugins\Scrobbler\Trakt\TraktAuthenticationException;
 use Phlix\Plugins\Scrobbler\Trakt\TraktRateLimitException;
 use PHPUnit\Framework\TestCase;
 use Workerman\Http\Client;
-use Workerman\Worker;
 
 /**
  * Coverage for HttpClient::requestAsync() — the cooperative-wait async branch.
@@ -21,9 +22,12 @@ use Workerman\Worker;
  * against a real local server so headers like Retry-After come from actual
  * wire bytes rather than hand-built fixtures.
  *
- * The async branch is taken when a Workerman event loop is "running"; each
- * test sets Worker::$globalEvent and tearDown resets it (plus the stub state)
- * so later cURL-path tests in other files are unaffected by test ordering.
+ * PG-125 reworked the branch gate: the async transport is chosen only when
+ * the host helpers report a running event loop INSIDE a coroutine and the URL
+ * is not https-under-the-Swoole-loop. Those helpers (WorkerContext,
+ * EventLoopTls) are flag-driven stubs registered by tests/bootstrap.php, so
+ * setUp turns the cooperative context on for this file and tearDown resets
+ * every flag — later cURL-path tests in other files stay unaffected.
  */
 final class HttpClientAsyncTest extends TestCase
 {
@@ -32,23 +36,131 @@ final class HttpClientAsyncTest extends TestCase
 
     protected function setUp(): void
     {
-        // Force the async branch: eventLoopRunning() requires a non-null
-        // Workerman event loop marker.
-        Worker::$globalEvent = new \stdClass();
+        // Force the async branch: the gate (asyncTransportUsable) requires a
+        // live loop + coroutine context and no Swoole-TLS stall.
+        WorkerContext::$eventLoopRunning = true;
+        WorkerContext::$inCoroutine = true;
+        EventLoopTls::$swooleLoopActive = false;
         Client::reset();
     }
 
     protected function tearDown(): void
     {
-        // Critical: reset the event-loop marker and the stub statics, otherwise
+        // Critical: reset the gate flags and the stub statics, otherwise
         // later tests in other files would take the async path and break.
-        Worker::$globalEvent = null;
+        WorkerContext::$eventLoopRunning = false;
+        WorkerContext::$inCoroutine = false;
+        EventLoopTls::$swooleLoopActive = false;
         Client::reset();
 
         if ($this->savedHookFlags !== null && \extension_loaded('swoole')) {
             \Swoole\Runtime::enableCoroutine($this->savedHookFlags);
             $this->savedHookFlags = null;
         }
+    }
+
+    // --- PG-125: the gate itself -----------------------------------------------
+
+    /**
+     * The production defect shape: a live worker event loop with the call
+     * arriving from a non-coroutine Timer callback. The old gate took the
+     * async path here and busy-pumped to a false timeout while no socket
+     * callback could run; the fixed gate must hand the request to the
+     * blocking cURL transport instead (which against this dead local port
+     * fails fast and loudly, proving which transport answered).
+     */
+    public function testLoopMarkerAloneOutsideCoroutineFallsBackToBlockingCurl(): void
+    {
+        WorkerContext::$inCoroutine = false;
+
+        try {
+            (new HttpClient(timeout: 1))->get('https://127.0.0.1:1/pg125');
+            $this->fail('Expected the blocking transport to fail fast on the dead port');
+        } catch (TraktApiException $e) {
+            $this->assertStringContainsString('cURL error:', $e->getMessage());
+        }
+
+        $this->assertNull(Client::$lastRequest, 'the async transport must NOT have been used');
+    }
+
+    public function testNoEventLoopFallsBackToBlockingCurlEvenInsideCoroutine(): void
+    {
+        WorkerContext::$eventLoopRunning = false;
+
+        try {
+            (new HttpClient(timeout: 1))->get('https://127.0.0.1:1/pg125');
+            $this->fail('Expected the blocking transport to fail fast on the dead port');
+        } catch (TraktApiException $e) {
+            $this->assertStringContainsString('cURL error:', $e->getMessage());
+        }
+
+        $this->assertNull(Client::$lastRequest, 'the async transport must NOT have been used');
+    }
+
+    /**
+     * https while the Swoole loop drives the process stalls async TLS reads
+     * (host EventLoopTls) — even in a coroutine such a URL takes blocking
+     * cURL; the plain-http sibling URL still reaches the async transport
+     * (visible via the HTTPS-only refusal raised from inside requestAsync).
+     */
+    public function testHttpsUnderSwooleLoopFallsBackWhilePlainHttpStaysAsync(): void
+    {
+        EventLoopTls::$swooleLoopActive = true;
+
+        try {
+            (new HttpClient(timeout: 1))->get('https://127.0.0.1:1/pg125');
+            $this->fail('Expected the blocking transport to fail fast on the dead port');
+        } catch (TraktApiException $e) {
+            $this->assertStringContainsString('cURL error:', $e->getMessage());
+        }
+
+        $this->assertNull(Client::$lastRequest);
+
+        $this->expectException(TraktApiException::class);
+        $this->expectExceptionMessageMatches('/Refusing non-HTTPS async request/');
+
+        (new HttpClient(timeout: 1))->get('http://api.trakt.tv/users/me');
+    }
+
+    /**
+     * PG-125 pooling: one client per TLS peer host, reused across requests —
+     * never a fresh construction per round trip.
+     */
+    public function testAsyncClientsArePooledPerHostNotPerRequest(): void
+    {
+        $client = new HttpClient(timeout: 1);
+        foreach (['https://api.trakt.tv/users/me', 'https://api.trakt.tv/users/watched'] as $url) {
+            Client::$responses[$url] = ['status' => 200, 'headers' => [], 'body' => '[]'];
+            $client->get($url);
+        }
+        $this->assertSame(1, Client::$constructs, 'same host must reuse the pooled client');
+
+        Client::$responses['https://login.trakt.tv/oauth/token'] = [
+            'status' => 200,
+            'headers' => [],
+            'body' => '{}',
+        ];
+        $client->get('https://login.trakt.tv/oauth/token');
+        $this->assertSame(2, Client::$constructs, 'a distinct TLS peer gets its own pooled client');
+    }
+
+    /**
+     * The pooled client is built exactly once per instance and must carry the
+     * strict TLS context on every peer host it serves.
+     */
+    public function testPooledClientCarriesStrictTlsContextForItsPeerHost(): void
+    {
+        Client::$responses['https://login.trakt.tv/oauth/token'] = [
+            'status' => 200,
+            'headers' => [],
+            'body' => '{}',
+        ];
+
+        (new HttpClient(timeout: 1))->get('https://login.trakt.tv/oauth/token');
+
+        $ssl = Client::$lastConfig['context']['ssl'] ?? null;
+        $this->assertIsArray($ssl);
+        $this->assertSame('login.trakt.tv', $ssl['peer_name'], 'peer_name must follow the request host');
     }
 
     // --- deterministic: async branch, no network, no swoole required ---------

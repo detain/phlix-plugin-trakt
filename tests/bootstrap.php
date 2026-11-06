@@ -12,9 +12,6 @@ require_once __DIR__ . '/stubs/Workerman/MySQL/Connection.php';
 // real classes are host-supplied by phlix-server and are not in this plugin's
 // dependency closure, so the stubs are registered unless the host already
 // provided them.
-if (!class_exists(\Workerman\Worker::class)) {
-    require_once __DIR__ . '/stubs/Workerman/Worker.php';
-}
 if (!class_exists(\Workerman\Http\Response::class)) {
     require_once __DIR__ . '/stubs/Workerman/Http/Response.php';
 }
@@ -27,6 +24,55 @@ if (!class_exists(\Workerman\Http\Client::class)) {
 // arms are recorded only, never fired.
 if (!class_exists(\Workerman\Timer::class)) {
     require_once __DIR__ . '/stubs/Workerman/Timer.php';
+}
+
+/**
+ * Stubs for the host-supplied transport-gate helpers (PG-125).
+ *
+ * HttpClient::asyncTransportUsable() copies the phlix-server gate
+ * (Phlix\Common\Runtime\WorkerContext + Phlix\Common\Http\EventLoopTls):
+ * the cooperative async path only runs inside a coroutine on a live event
+ * loop, and never for https while the Swoole loop stalls TLS reads. Those
+ * classes live in the Phlix server and are not part of this plugin's
+ * dependency closure, so standalone PHPUnit registers flag-driven stubs —
+ * exactly the seam the async tests need to drive each branch deterministically.
+ * (Inside the host the real classes win and these are never defined.)
+ */
+if (!class_exists(\Phlix\Common\Runtime\WorkerContext::class)) {
+    class WorkerContextStub
+    {
+        /** Force isEventLoopRunning(). */
+        public static bool $eventLoopRunning = false;
+
+        /** Force inCoroutine(). */
+        public static bool $inCoroutine = false;
+
+        public static function isEventLoopRunning(): bool
+        {
+            return self::$eventLoopRunning;
+        }
+
+        public static function inCoroutine(): bool
+        {
+            return self::$inCoroutine;
+        }
+    }
+
+    class_alias(WorkerContextStub::class, \Phlix\Common\Runtime\WorkerContext::class);
+}
+if (!class_exists(\Phlix\Common\Http\EventLoopTls::class)) {
+    class EventLoopTlsStub
+    {
+        /** When true, requiresBlockingCurl() answers true for https URLs. */
+        public static bool $swooleLoopActive = false;
+
+        public static function requiresBlockingCurl(string $url): bool
+        {
+            return self::$swooleLoopActive && stripos($url, 'https://') === 0;
+        }
+    }
+
+    class_alias(EventLoopTlsStub::class, \Phlix\Common\Http\EventLoopTls::class);
 }
 
 /**
