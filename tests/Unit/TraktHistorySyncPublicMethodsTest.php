@@ -360,6 +360,31 @@ final class TraktHistorySyncPublicMethodsTest extends TestCase
     }
 
     /**
+     * PG-129: when addToHistory reports the hasAnyId skip, the push did NOT
+     * happen — syncPhlixToTrakt must return false. On the parent the doomed
+     * POST 400'd into the exception arm (also false), so this pins that the
+     * cheap skip preserves the observable truth instead of silently
+     * reporting a successful push.
+     */
+    public function testSyncPhlixToTraktReturnsFalseWhenHistoryPushIsSkipped(): void
+    {
+        $api = $this->createMock(TraktApi::class);
+        $api->method('addToHistory')->willReturn(['added' => false, 'skipped' => true]);
+
+        $watchHistory = $this->createMock(WatchHistory::class);
+        $watchHistory->method('getForMediaItem')->willReturn([
+            'media_name' => 'No Ids Movie',
+            'media_type' => 'movie',
+            'metadata' => [],
+            'progress_percent' => 95.0,
+        ]);
+
+        $sync = $this->createSync($api, $watchHistory);
+
+        $this->assertFalse($sync->syncPhlixToTrakt('my-media-id', '2024-06-15T12:00:00Z', 0, null));
+    }
+
+    /**
      * PG-127: the /users/{id}/history shape carries no `runtime` on its
      * embedded objects, so every completion pulled used to hit the
      * preserve-skip and silently import nothing. The sync must size the

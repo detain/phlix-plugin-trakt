@@ -434,11 +434,15 @@ class TraktApi
     /**
      * Add a media item to Trakt watched history (for Phlix→Trakt sync).
      *
+     * Items Trakt cannot resolve — no trakt/imdb/tmdb id (episodes: plus
+     * tvdb) — are skipped without a request: `['added' => false,
+     * 'skipped' => true]`, the same shape the rating surfaces use.
+     *
      * @param MediaItem $item Media item that was watched
      * @param \DateTimeImmutable $watchedAt When the item was watched
      * @param string $accessToken OAuth access token
      *
-     * @return array<string, mixed> API response
+     * @return array<string, mixed> API response, or the skip marker
      *
      * @throws TraktApiException|TraktAuthenticationException On API error
      * @since 1.1.0
@@ -467,6 +471,34 @@ class TraktApi
                 ],
                 'season' => $item->metadata['season_number'] ?? 1,
                 'number' => $item->metadata['episode_number'] ?? 1,
+            ];
+        }
+
+        // PG-129: the scrobble and rating surfaces refuse to talk about an
+        // item Trakt cannot resolve; history push must carry the same law.
+        // An empty-ids payload is a doomed round-trip (Trakt rejects it),
+        // so it never leaves the wire. Idioms identical to the siblings.
+        $movieIds = $movie['ids'] ?? [];
+        $episodeIds = $episode['ids'] ?? [];
+        $hasAnyId = (
+            $item->type === 'movie'
+            && ($movieIds['trakt'] ?? $movieIds['imdb'] ?? $movieIds['tmdb'] ?? null) !== null
+        ) || (
+            $item->type === 'episode'
+            && ($episodeIds['trakt']
+                ?? $episodeIds['tvdb']
+                ?? $episodeIds['imdb']
+                ?? $episodeIds['tmdb']
+                ?? null) !== null
+        );
+
+        if (!$hasAnyId) {
+            $this->logger->debug('Trakt: add to history skipped: no external ID available', [
+                'item' => $item->name,
+            ]);
+            return [
+                'added' => false,
+                'skipped' => true,
             ];
         }
 

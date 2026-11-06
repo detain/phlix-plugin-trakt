@@ -285,7 +285,18 @@ class TraktHistorySync
             $item = $this->buildMediaItem($mediaItemId, $existing);
             $watchedAt = new \DateTimeImmutable($lastWatchedAt);
 
-            $this->api->addToHistory($item, $watchedAt, $this->settings->accessToken ?? '');
+            $response = $this->api->addToHistory($item, $watchedAt, $this->settings->accessToken ?? '');
+
+            if (($response['skipped'] ?? null) === true) {
+                // PG-129: the hasAnyId skip means nothing was pushed. On the
+                // parent this path was a doomed POST that 400'd into the
+                // exception arm below (also false) — the cheap skip keeps the
+                // observable truth: a skipped push is NOT a successful one.
+                $this->logger->debug('TraktHistorySync: Phlix→Trakt push skipped (no external ID)', [
+                    'media_item_id' => $mediaItemId,
+                ]);
+                return false;
+            }
 
             $this->logger->info('TraktHistorySync: pushed to Trakt', [
                 'media_item_id' => $mediaItemId,

@@ -661,6 +661,31 @@ final class TraktApiTest extends TestCase
             'redirect URI resolution belongs to the composition root, not the API client'
         );
     }
+
+    /**
+     * PG-129: an item without a single external ID can never be resolved by
+     * Trakt — /sync/history would 400. The sibling surfaces (scrobble,
+     * ratings) gate on hasAnyId; addToHistory must carry the same law and
+     * the same skip shape instead of a doomed HTTP round-trip.
+     */
+    public function testAddToHistorySkipsDoomedPushWithoutExternalIds(): void
+    {
+        $http = new MockHttpClient();
+        $api = new TraktApi($http, self::CLIENT_ID, self::CLIENT_SECRET, new NullLogger());
+
+        $item = new \Phlix\Media\Library\MediaItem(
+            id: 'mi-no-ids',
+            name: 'No Ids Movie',
+            type: 'movie',
+            path: '/movies/no-ids.mkv',
+            metadata: [],
+        );
+
+        $result = $api->addToHistory($item, new \DateTimeImmutable('2024-01-01T00:00:00Z'), 'access-token');
+
+        $this->assertSame(['added' => false, 'skipped' => true], $result);
+        $this->assertSame('', $http->lastMethod, 'no HTTP may be attempted for an ID-less item');
+    }
 }
 
 /**
