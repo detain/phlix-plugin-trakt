@@ -358,4 +358,125 @@ final class TraktHistorySyncPublicMethodsTest extends TestCase
 
         $this->assertTrue($result);
     }
+
+    /**
+     * PG-127: the /users/{id}/history shape carries no `runtime` on its
+     * embedded objects, so every completion pulled used to hit the
+     * preserve-skip and silently import nothing. The sync must size the
+     * completed row from local metadata when Trakt supplies no runtime.
+     */
+    public function testSyncTraktToPhlixSizesCompletedRowFromLocalMetadataWhenTraktCarriesNoRuntime(): void
+    {
+        $traktHistory = [
+            [
+                'movie' => [
+                    'ids' => ['tmdb' => 123],
+                ],
+                'watched_at' => '2024-03-01T10:00:00Z',
+            ],
+        ];
+
+        $api = $this->createMock(TraktApi::class);
+        $api->method('getWatchedHistory')->willReturn($traktHistory);
+
+        $db = new TestableConnection();
+        $db->setResults([
+            [['id' => 'local-id-x']], // external-id lookup
+            [['metadata_json' => '{"duration_seconds":5400}']], // PG-127 sizing read
+        ]);
+
+        $watchHistory = $this->getMockBuilder(WatchHistory::class)
+            ->onlyMethods(['getForMediaItem', 'updateProgress'])
+            ->getMock();
+        $watchHistory->method('getForMediaItem')->willReturn(null);
+
+        $watchHistory->expects($this->once())->method('updateProgress')->with(
+            'default',
+            'local-id-x',
+            5400 * WatchHistory::TICKS_PER_SECOND,
+            5400 * WatchHistory::TICKS_PER_SECOND,
+            WatchHistory::STATUS_COMPLETED,
+        );
+
+        $sync = $this->createSync($api, $watchHistory, null, $db);
+
+        $this->assertSame(1, $sync->syncTraktToPhlix('default'));
+    }
+
+    /**
+     * PG-127: a sub-threshold local row that already carries duration_ticks
+     * is the cheapest trusted sizing source — no metadata query needed.
+     */
+    public function testSyncTraktToPhlixReusesExistingRowDurationTicksWhenTraktCarriesNoRuntime(): void
+    {
+        $traktHistory = [
+            [
+                'movie' => [
+                    'ids' => ['tmdb' => 123],
+                ],
+                'watched_at' => '2024-03-02T10:00:00Z',
+            ],
+        ];
+
+        $api = $this->createMock(TraktApi::class);
+        $api->method('getWatchedHistory')->willReturn($traktHistory);
+
+        $db = new TestableConnection();
+        $db->setResults([[['id' => 'local-id-123']]]); // external-id lookup only
+
+        $watchHistory = $this->getMockBuilder(WatchHistory::class)
+            ->onlyMethods(['getForMediaItem', 'updateProgress'])
+            ->getMock();
+        $watchHistory->method('getForMediaItem')
+            ->willReturn(['progress_percent' => 50.0, 'duration_ticks' => 45000000]);
+
+        $watchHistory->expects($this->once())->method('updateProgress')->with(
+            'default',
+            'local-id-123',
+            45000000,
+            45000000,
+            WatchHistory::STATUS_COMPLETED,
+        );
+
+        $sync = $this->createSync($api, $watchHistory, null, $db);
+
+        $this->assertSame(1, $sync->syncTraktToPhlix('default'));
+        $this->assertCount(1, $db->getCalls(), 'existing row duration must not trigger a metadata query');
+    }
+
+    /**
+     * PG-127 non-destructive law pin: when NEITHER Trakt nor local metadata
+     * carries a positive duration, the preserve-skip stays — a 0/0 write
+     * would zero an existing row while marking it completed.
+     */
+    public function testSyncTraktToPhlixPreservesLocalStateWhenNeitherSideHasDuration(): void
+    {
+        $traktHistory = [
+            [
+                'movie' => [
+                    'ids' => ['tmdb' => 123],
+                ],
+                'watched_at' => '2024-03-03T10:00:00Z',
+            ],
+        ];
+
+        $api = $this->createMock(TraktApi::class);
+        $api->method('getWatchedHistory')->willReturn($traktHistory);
+
+        $db = new TestableConnection();
+        $db->setResults([
+            [['id' => 'local-id-123']],
+            [['metadata_json' => null]],
+        ]);
+
+        $watchHistory = $this->getMockBuilder(WatchHistory::class)
+            ->onlyMethods(['getForMediaItem', 'updateProgress'])
+            ->getMock();
+        $watchHistory->method('getForMediaItem')->willReturn(null);
+        $watchHistory->expects($this->never())->method('updateProgress');
+
+        $sync = $this->createSync($api, $watchHistory, null, $db);
+
+        $this->assertSame(0, $sync->syncTraktToPhlix('default'));
+    }
 }

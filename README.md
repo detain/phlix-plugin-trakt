@@ -48,7 +48,7 @@ php bin/phlix plugin:install https://github.com/detain/phlix-plugin-trakt
 | `access_token` | string | No | Yes | `advanced` | `null` | Obtained automatically when you authorize Phlix with Trakt — you do not enter this by hand. Create an [API app](https://app.trakt.tv/settings/apps/api/new) only if you self-host credentials. |
 | `refresh_token` | string | No | Yes | `advanced` | `null` | Set automatically during authorization; used to renew the access token. Not entered by hand. |
 | `expires_at` | integer | No | Yes | `advanced` | `null` | Unix timestamp when the access token expires. Managed automatically. |
-| `sync_enabled` | boolean | No | No | `advanced` | `true` | Pulls Trakt watch history into Phlix and lets finished Phlix items be pushed to Trakt. Pushing completions additionally requires scrobbling to be enabled. Optional; default on. |
+| `sync_enabled` | boolean | No | No | `advanced` | `true` | Pulls Trakt watch history into Phlix and lets finished Phlix items be pushed to Trakt. Pulled completions are sized from the Trakt entry runtime when present, else from the local media item duration. Pushing completions additionally requires scrobbling to be enabled. Optional; default on. |
 | `sync_interval_minutes` | integer | No | No | `advanced` | `30` | How often the scheduled Trakt→Phlix history pull runs. Optional; default 30. |
 | `scrobble_enabled` | boolean | No | No | `advanced` | `true` | Report play/pause/stop to Trakt as you watch. Optional; default on. |
 

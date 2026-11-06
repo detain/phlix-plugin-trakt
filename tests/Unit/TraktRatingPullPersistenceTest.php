@@ -201,10 +201,19 @@ final class TraktRatingPullPersistenceTest extends TestCase
         }
     }
 
-    public function testHistoryEntryWithoutRuntimePreservesLocalInProgressRow(): void
+    public function testHistoryEntryWithoutRuntimeCompletesInProgressRowFromItsOwnDuration(): void
     {
         // Same review section's second destructive site: the history pull
-        // passed extractDurationTicks()=0 straight into updateProgress.
+        // passed extractDurationTicks()=0 straight into updateProgress, so
+        // the original fix made every runtime-less entry skip. PG-127 then
+        // revealed the skip was TOTAL for real pulls — the /users/{id}/history
+        // shape carries no runtime, so the completed-marker never fired. A
+        // sub-threshold local row that already carries duration_ticks is the
+        // trusted sizing source: the entry now completes at exactly that
+        // duration (position=duration, completed). The non-destructive law
+        // that used to be pinned here as "never write" is pinned by shape:
+        // with() holds the five-argument host contract, and zero-ticks or a
+        // invented duration reddens this test.
         $traktHistory = [[
             'movie' => ['ids' => ['tmdb' => 123]],
             'watched_at' => '2024-01-15T10:30:00Z',
@@ -217,18 +226,26 @@ final class TraktRatingPullPersistenceTest extends TestCase
         $db = new TestableConnection();
         $db->setResults([
             [['id' => self::MEDIA_ITEM_ID]],  // external-id lookup
-            [],                               // fetchAllWatchedHistory short-page break: no further queries
         ]);
 
         $watchHistory = $this->getMockBuilder(WatchHistory::class)
             ->onlyMethods(['getForMediaItem', 'updateProgress'])
             ->getMock();
         $watchHistory->method('getForMediaItem')->willReturn($this->inProgressHistoryRow());
-        $watchHistory->expects($this->never())->method('updateProgress');
+        $watchHistory->expects($this->once())->method('updateProgress')->with(
+            self::PROFILE_ID,
+            self::MEDIA_ITEM_ID,
+            100 * WatchHistory::TICKS_PER_SECOND,
+            100 * WatchHistory::TICKS_PER_SECOND,
+            WatchHistory::STATUS_COMPLETED,
+        );
 
         $sync = $this->createSync($api, $watchHistory, $db);
 
-        $this->assertSame(0, $sync->syncTraktToPhlix(self::PROFILE_ID));
+        $this->assertSame(1, $sync->syncTraktToPhlix(self::PROFILE_ID));
+
+        // Local row duration is trusted: no metadata query may follow.
+        $this->assertCount(1, $db->getCalls());
     }
 
     public function testHistoryEntryWithRuntimeStillCompletesItem(): void

@@ -62,7 +62,7 @@
             "required": false,
             "tier": "advanced",
             "label": "Enable history sync",
-            "description": "Pulls Trakt watch history into Phlix and lets finished Phlix items be pushed to Trakt. Pushing completions additionally requires scrobbling to be enabled. Optional; default on."
+            "description": "Pulls Trakt watch history into Phlix and lets finished Phlix items be pushed to Trakt. Pulled completions are sized from the Trakt entry runtime when present, else from the local media item duration. Pushing completions additionally requires scrobbling to be enabled. Optional; default on."
         },
         "sync_interval_minutes": {
             "type": "integer",

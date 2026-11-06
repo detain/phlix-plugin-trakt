@@ -1475,7 +1475,9 @@ class TraktPlugin implements LifecycleInterface, ConfigurableInterface
      * Prefers the precise probed `duration_seconds` and falls back to the TMDB
      * `runtime` (minutes → seconds). Returns 0.0 when neither is a usable
      * positive number, signalling "duration unknown" to
-     * {@see self::computeProgressPercent()}.
+     * {@see self::computeProgressPercent()}. The rule itself lives in
+     * {@see DurationSizing} since PG-127 — the history pull reads the same
+     * metadata pair and must not grow a second copy that can drift.
      *
      * @param MediaItem $item Media item being scrobbled.
      *
@@ -1483,20 +1485,7 @@ class TraktPlugin implements LifecycleInterface, ConfigurableInterface
      */
     private function resolveDurationSeconds(MediaItem $item): float
     {
-        $metadata = $item->metadata;
-
-        $durationSeconds = $metadata['duration_seconds'] ?? null;
-        if (is_numeric($durationSeconds) && (float) $durationSeconds > 0.0) {
-            return (float) $durationSeconds;
-        }
-
-        // TMDB runtime is expressed in whole minutes.
-        $runtime = $metadata['runtime'] ?? null;
-        if (is_numeric($runtime) && (float) $runtime > 0.0) {
-            return (float) $runtime * 60.0;
-        }
-
-        return 0.0;
+        return DurationSizing::secondsFromMetadata($item->metadata);
     }
 
     /**

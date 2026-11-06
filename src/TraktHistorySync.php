@@ -15,6 +15,9 @@ use Psr\Log\NullLogger;
  * - Trakt→Phlix: Pulls Trakt watched history on schedule and writes local
  *   WatchHistory rows: new items, plus existing sub-threshold items, which
  *   are overwritten with a completed row (existing ≥ 90% rows are kept).
+ *   Completed rows are sized from the Trakt entry runtime when present,
+ *   else from local history/metadata duration (PG-127); only when neither
+ *   side has one is the entry skipped to preserve local state.
  * - Phlix→Trakt: Pushes local WatchHistory entries (≥ 90%) to Trakt
  *   after PlaybackStopped events where completion threshold was met.
  *
@@ -189,15 +192,27 @@ class TraktHistorySync
             $durationTicks = $this->extractDurationTicks($itemMap);
 
             if ($durationTicks <= 0) {
-                // Trakt supplied no runtime for this entry. Writing 0/0 into
-                // updateProgress has no "leave unchanged" encoding (0 is not
-                // null), so it would zero an existing row's position,
-                // duration and progress while marking it completed — the
-                // same destructive class as the rating-pull defect (review
-                // trakt__srphp C2). Preserving local state is the only
-                // non-destructive option.
+                // PG-127: the /users/{id}/history wire shape carries no
+                // `runtime` on its embedded movie/episode objects, so this
+                // branch is the NORM for a real pull — and until now every
+                // such entry hit the preserve-skip below and the entire
+                // imported history was silently discarded. Size the row
+                // from local truth first: the existing sub-threshold row's
+                // own duration_ticks, else the media item's metadata
+                // duration (the same pair the scrobble path reads).
+                $durationTicks = $this->localDurationTicks($existing, $mediaItemId);
+            }
+
+            if ($durationTicks <= 0) {
+                // Neither Trakt nor Phlix could supply a duration for this
+                // entry. Writing 0/0 into updateProgress has no "leave
+                // unchanged" encoding (0 is not null), so it would zero an
+                // existing row's position, duration and progress while
+                // marking it completed — the same destructive class as the
+                // rating-pull defect (review trakt__srphp C2). Preserving
+                // local state is the only non-destructive option.
                 $this->logger->warning(
-                    'TraktHistorySync: no runtime in Trakt entry; skipping write to preserve local progress',
+                    'TraktHistorySync: no duration from Trakt or local metadata; skipping write to preserve local progress',
                     ['media_item_id' => $mediaItemId]
                 );
                 continue;
@@ -553,6 +568,68 @@ class TraktHistorySync
             return $seconds * WatchHistory::TICKS_PER_SECOND;
         }
         return 0;
+    }
+
+    /**
+     * Size a completed-history row from local truth (PG-127).
+     *
+     * First choice is the existing sub-threshold row's own duration_ticks
+     * (already-trusted local state, no query); otherwise the media item's
+     * metadata duration via {@see DurationSizing}, scaled to ticks. Returns
+     * 0 when neither side carries a positive duration — the caller must then
+     * preserve local state rather than write a destructive 0/0 row.
+     *
+     * @param array<string, mixed>|null $existing Local history row, if any
+     * @param string $mediaItemId Local media item the pull resolved to
+     *
+     * @return int Duration in ticks (0 if unknown locally)
+     */
+    private function localDurationTicks(?array $existing, string $mediaItemId): int
+    {
+        $rowTicks = $existing['duration_ticks'] ?? null;
+        if (is_numeric($rowTicks) && (int) $rowTicks > 0) {
+            return (int) $rowTicks;
+        }
+
+        $result = $this->db->query(
+            'SELECT metadata_json FROM media_items WHERE id = ? LIMIT 1',
+            [$mediaItemId]
+        );
+
+        if (!is_array($result)) {
+            return 0;
+        }
+
+        $row = $result[0] ?? null;
+        if (!is_array($row)) {
+            return 0;
+        }
+
+        $metadataJson = $row['metadata_json'] ?? null;
+        if (!is_string($metadataJson) || $metadataJson === '') {
+            return 0;
+        }
+
+        $decoded = json_decode($metadataJson, true);
+        if (!is_array($decoded)) {
+            return 0;
+        }
+
+        // JSON decodes to array<mixed,mixed>; keep string keys only — the
+        // same narrowing the pull loop applies to Trakt item maps.
+        $metadata = [];
+        foreach ($decoded as $key => $value) {
+            if (is_string($key)) {
+                $metadata[$key] = $value;
+            }
+        }
+
+        $seconds = DurationSizing::secondsFromMetadata($metadata);
+        if ($seconds <= 0.0) {
+            return 0;
+        }
+
+        return (int) round($seconds * WatchHistory::TICKS_PER_SECOND);
     }
 
     /**

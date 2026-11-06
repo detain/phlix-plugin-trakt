@@ -369,10 +369,11 @@ class TraktApi
      * never imported (review trakt__srphp M5).
      *
      * Note the history wire shape carries no `runtime` on its embedded
-     * movie/episode objects, so entries fall to the sync's preserve-local guard
-     * (no runtime → no destructive write). Sizing local duration from the
-     * item's own metadata is a deliberate behavior change owned by a separate
-     * follow-up, not a drive-by here.
+     * movie/episode objects, so the sync sizes completed rows from local
+     * truth instead — the existing row's duration or the media item's
+     * metadata duration (PG-127); when neither side has one, the
+     * preserve-local guard still keeps the row untouched (no destructive
+     * 0/0 write).
      *
      * @param string $username Trakt username
      * @param int $page Page number (1-indexed; the endpoint is paginated — see X-Pagination headers)
