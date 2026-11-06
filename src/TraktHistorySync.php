@@ -42,28 +42,6 @@ class TraktHistorySync
         $this->logger = $logger ?? new NullLogger();
     }
 
-    /**
-     * Sync Trakt watched history → Phlix local history.
-     *
-     * Pulls the user's watched history from Trakt and compares against
-     * local WatchHistory entries. For items watched on Trakt but not yet
-     * ≥ 90% complete in Phlix, writes a local entry.
-     *
-     * Conflict policy is what this method actually implements — there is no
-     * timestamp comparison: a local entry already at ≥ 90% completion always
-     * wins (skipped); a local entry below that threshold is overwritten
-     * unconditionally with a completed Trakt row regardless of when either
-     * side was watched. The parsed `watchedAt` is log context only.
-     * (A true "last-write-wins by watchedAt" merge is NOT implemented;
-     * shipping one would be a behavior change, not a correction of this
-     * prose.)
-     *
-     * @param string $profileId Profile ID to sync history for
-     *
-     * @return int Number of new entries written
-     *
-     * @since 1.1.0
-     */
     /** Items requested per Trakt history page. */
     private const HISTORY_PAGE_SIZE = 100;
 
@@ -134,9 +112,16 @@ class TraktHistorySync
      * Transient API failures are logged and yield a 0-count return WITHOUT
      * touching local state; an {@see TraktAuthenticationException} is
      * rethrown — credential recovery (one gated refresh then one re-pull) is
-     * the pull entries' job in {@see TraktPlugin}, not this layer's. Conflict
-     * policy of the shipped code is described on the entry-point prose above
-     * (and is NOT a timestamped last-write-wins merge).
+     * the pull entries' job in {@see TraktPlugin}, not this layer's.
+     *
+     * Conflict policy (PG-004: folded here from an orphaned block that used
+     * to float above HISTORY_PAGE_SIZE — one method, one contract): there is
+     * no timestamp comparison. A local entry already at ≥ 90% completion
+     * always wins (skipped); a local entry below that threshold is
+     * overwritten unconditionally with a completed Trakt row regardless of
+     * when either side was watched. The parsed `watchedAt` is log context
+     * only. (A true "last-write-wins by watchedAt" merge is NOT implemented;
+     * shipping one would be a behavior change, not a correction of prose.)
      *
      * @param string $profileId Profile ID to sync history for
      *
@@ -272,7 +257,7 @@ class TraktHistorySync
             return false;
         }
 
-        $existing = $this->watchHistory->getForMediaItem('default', $mediaItemId);
+        $existing = $this->watchHistory->getForMediaItem(TraktPlugin::DEFAULT_PROFILE_ID, $mediaItemId);
         if ($existing === null || $existing['progress_percent'] < WatchHistory::COMPLETED_THRESHOLD) {
             $this->logger->debug('TraktHistorySync: item below 90%, skipping Phlix→Trakt', [
                 'media_item_id' => $mediaItemId,
@@ -838,7 +823,7 @@ class TraktHistorySync
             return false;
         }
 
-        $existing = $this->watchHistory->getForMediaItem('default', $mediaItemId);
+        $existing = $this->watchHistory->getForMediaItem(TraktPlugin::DEFAULT_PROFILE_ID, $mediaItemId);
         if ($existing === null) {
             $this->logger->debug('TraktHistorySync: no local history for item, skipping rating sync', [
                 'media_item_id' => $mediaItemId,

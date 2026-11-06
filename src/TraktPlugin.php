@@ -73,9 +73,15 @@ class TraktPlugin implements LifecycleInterface, ConfigurableInterface
      */
     private const SYNC_INTERVAL_SEC = 1800;
 
+    /**
+     * Always an instance: the constructor coerces a null argument to
+     * NullLogger (PG-002, review trakt srphp #16 — the nullable declaration
+     * forced 37 dead `?->` call sites onto a property that can never be null).
+     */
+    private LoggerInterface $logger;
+
     private ?ItemRepository $itemRepository = null;
     private ?WatchHistory $watchHistory = null;
-    private ?LoggerInterface $logger = null;
     private ?TraktApi $api = null;
     private ?Connection $db = null;
 
@@ -131,9 +137,11 @@ class TraktPlugin implements LifecycleInterface, ConfigurableInterface
      * no payload (signalling only) and is recreated per refresh cycle so a
      * failed refresh never wedges the next one.
      *
-     * @var \Swoole\Coroutine\Channel|null
+     * Typed against the Swoole class (PG-003, review trakt srphp #17): class
+     * types resolve lazily, so the declaration is legal even where ext-swoole
+     * is absent, and PHP then enforces it at every assignment.
      */
-    private $refreshLock = null;
+    private ?\Swoole\Coroutine\Channel $refreshLock = null;
 
     /** Disables all scrobbling and sync when false. */
     private bool $enabled = false;
@@ -190,7 +198,7 @@ class TraktPlugin implements LifecycleInterface, ConfigurableInterface
             // false and the reconnect gate asks for a fresh link — and be
             // loud about it (silent verbatim pass-through used to loop
             // 'v1:...' as a Bearer token through 400/401s forever).
-            $this->logger?->error(
+            $this->logger->error(
                 'Trakt: stored tokens could not be decrypted (key rotation or corruption); re-link required',
                 ['error' => $e->getMessage()]
             );
@@ -246,7 +254,7 @@ class TraktPlugin implements LifecycleInterface, ConfigurableInterface
             $db = $container->get(Connection::class);
             $this->db = $db instanceof Connection ? $db : null;
         } catch (\Throwable $e) {
-            $this->logger?->warning('Trakt: database connection unavailable; Trakt→Phlix sync will not function', [
+            $this->logger->warning('Trakt: database connection unavailable; Trakt→Phlix sync will not function', [
                 'error' => $e->getMessage(),
             ]);
             $this->db = null;
@@ -288,7 +296,7 @@ class TraktPlugin implements LifecycleInterface, ConfigurableInterface
                 $this->settingsRepository = $repo instanceof TraktSettingsRepository ? $repo : null;
             }
         } catch (\Throwable $e) {
-            $this->logger?->warning('Trakt: settings repository unavailable; rotated tokens will not persist', [
+            $this->logger->warning('Trakt: settings repository unavailable; rotated tokens will not persist', [
                 'error' => $e->getMessage(),
             ]);
             $this->settingsRepository = null;
@@ -326,7 +334,7 @@ class TraktPlugin implements LifecycleInterface, ConfigurableInterface
                 }
             }
         } catch (\Throwable $e) {
-            $this->logger?->warning(
+            $this->logger->warning(
                 'Trakt: token cipher unavailable; tokens may be stored unencrypted',
                 ['error' => $e->getMessage()]
             );
@@ -337,7 +345,7 @@ class TraktPlugin implements LifecycleInterface, ConfigurableInterface
         $this->tokenCipher = SodiumTokenCipher::fromConfig($config['token_encryption_key'] ?? null);
 
         if ($this->tokenCipher === null) {
-            $this->logger?->warning(
+            $this->logger->warning(
                 'Trakt: no token encryption key; OAuth tokens will be stored unencrypted'
             );
         }
@@ -453,13 +461,13 @@ class TraktPlugin implements LifecycleInterface, ConfigurableInterface
         }
 
         if (!$this->settings->scrobbleEnabled) {
-            $this->logger?->debug('Trakt: scrobble disabled, skipping start');
+            $this->logger->debug('Trakt: scrobble disabled, skipping start');
             return;
         }
 
         $mediaItem = $this->findMediaItem($event->mediaItemId);
         if ($mediaItem === null) {
-            $this->logger?->debug('Trakt: media item not found', [
+            $this->logger->debug('Trakt: media item not found', [
                 'media_item_id' => $event->mediaItemId,
             ]);
             return;
@@ -506,7 +514,7 @@ class TraktPlugin implements LifecycleInterface, ConfigurableInterface
 
         $mediaItem = $this->findMediaItem($event->mediaItemId);
         if ($mediaItem === null) {
-            $this->logger?->debug('Trakt: media item not found on stop', [
+            $this->logger->debug('Trakt: media item not found on stop', [
                 'media_item_id' => $event->mediaItemId,
             ]);
             return;
@@ -553,7 +561,7 @@ class TraktPlugin implements LifecycleInterface, ConfigurableInterface
 
         $mediaItem = $this->findMediaItem($event->mediaItemId);
         if ($mediaItem === null) {
-            $this->logger?->debug('Trakt: media item not found on pause', [
+            $this->logger->debug('Trakt: media item not found on pause', [
                 'media_item_id' => $event->mediaItemId,
             ]);
             return;
@@ -590,7 +598,7 @@ class TraktPlugin implements LifecycleInterface, ConfigurableInterface
 
         $mediaItem = $this->findMediaItem($event->mediaItemId);
         if ($mediaItem === null) {
-            $this->logger?->debug('Trakt: media item not found on resume', [
+            $this->logger->debug('Trakt: media item not found on resume', [
                 'media_item_id' => $event->mediaItemId,
             ]);
             return;
@@ -699,7 +707,7 @@ class TraktPlugin implements LifecycleInterface, ConfigurableInterface
         try {
             $api->scrobbleStart($mediaItem, $progressPercent, $accessToken);
 
-            $this->logger?->info('Trakt scrobble start submitted', [
+            $this->logger->info('Trakt scrobble start submitted', [
                 'title' => $mediaItem->name,
                 'progress' => $progressPercent,
             ]);
@@ -708,18 +716,18 @@ class TraktPlugin implements LifecycleInterface, ConfigurableInterface
                 try {
                     $api->scrobbleStart($mediaItem, $progressPercent, $this->settings->accessToken ?? '');
 
-                    $this->logger?->info('Trakt scrobble start submitted after refresh', [
+                    $this->logger->info('Trakt scrobble start submitted after refresh', [
                         'title' => $mediaItem->name,
                         'progress' => $progressPercent,
                     ]);
                 } catch (TraktApiException $retry) {
-                    $this->logger?->warning('Trakt: scrobble start failed after refresh retry', [
+                    $this->logger->warning('Trakt: scrobble start failed after refresh retry', [
                         'error' => $retry->getMessage(),
                     ]);
                 }
             }
         } catch (TraktApiException $e) {
-            $this->logger?->warning('Trakt: scrobble start failed', [
+            $this->logger->warning('Trakt: scrobble start failed', [
                 'error' => $e->getMessage(),
             ]);
         }
@@ -773,7 +781,7 @@ class TraktPlugin implements LifecycleInterface, ConfigurableInterface
         try {
             $api->scrobbleStop($mediaItem, $progressPercent, $accessToken);
 
-            $this->logger?->info('Trakt scrobble stop submitted', [
+            $this->logger->info('Trakt scrobble stop submitted', [
                 'title' => $mediaItem->name,
                 'progress' => $progressPercent,
             ]);
@@ -782,18 +790,18 @@ class TraktPlugin implements LifecycleInterface, ConfigurableInterface
                 try {
                     $api->scrobbleStop($mediaItem, $progressPercent, $this->settings->accessToken ?? '');
 
-                    $this->logger?->info('Trakt scrobble stop submitted after refresh', [
+                    $this->logger->info('Trakt scrobble stop submitted after refresh', [
                         'title' => $mediaItem->name,
                         'progress' => $progressPercent,
                     ]);
                 } catch (TraktApiException $retry) {
-                    $this->logger?->warning('Trakt: scrobble stop failed after refresh retry', [
+                    $this->logger->warning('Trakt: scrobble stop failed after refresh retry', [
                         'error' => $retry->getMessage(),
                     ]);
                 }
             }
         } catch (TraktApiException $e) {
-            $this->logger?->warning('Trakt: scrobble stop failed', [
+            $this->logger->warning('Trakt: scrobble stop failed', [
                 'error' => $e->getMessage(),
             ]);
         }
@@ -844,7 +852,7 @@ class TraktPlugin implements LifecycleInterface, ConfigurableInterface
         try {
             $api->scrobblePause($mediaItem, $progressPercent, $accessToken);
 
-            $this->logger?->info('Trakt scrobble pause submitted', [
+            $this->logger->info('Trakt scrobble pause submitted', [
                 'title' => $mediaItem->name,
                 'progress' => $progressPercent,
             ]);
@@ -853,18 +861,18 @@ class TraktPlugin implements LifecycleInterface, ConfigurableInterface
                 try {
                     $api->scrobblePause($mediaItem, $progressPercent, $this->settings->accessToken ?? '');
 
-                    $this->logger?->info('Trakt scrobble pause submitted after refresh', [
+                    $this->logger->info('Trakt scrobble pause submitted after refresh', [
                         'title' => $mediaItem->name,
                         'progress' => $progressPercent,
                     ]);
                 } catch (TraktApiException $retry) {
-                    $this->logger?->warning('Trakt: scrobble pause failed after refresh retry', [
+                    $this->logger->warning('Trakt: scrobble pause failed after refresh retry', [
                         'error' => $retry->getMessage(),
                     ]);
                 }
             }
         } catch (TraktApiException $e) {
-            $this->logger?->warning('Trakt: scrobble pause failed', [
+            $this->logger->warning('Trakt: scrobble pause failed', [
                 'error' => $e->getMessage(),
             ]);
         }
@@ -1045,14 +1053,14 @@ class TraktPlugin implements LifecycleInterface, ConfigurableInterface
 
         $refreshToken = $this->settings->refreshToken;
         if ($refreshToken === null || $refreshToken === '') {
-            $this->logger?->warning('Trakt: access token expired but no refresh token available');
+            $this->logger->warning('Trakt: access token expired but no refresh token available');
             return false;
         }
 
         try {
             $tokens = $this->api->refreshAccessToken($refreshToken);
         } catch (TraktApiException $e) {
-            $this->logger?->warning('Trakt: token refresh failed', [
+            $this->logger->warning('Trakt: token refresh failed', [
                 'error' => $e->getMessage(),
             ]);
             return false;
@@ -1060,7 +1068,7 @@ class TraktPlugin implements LifecycleInterface, ConfigurableInterface
 
         $this->applyRefreshedTokens($tokens);
 
-        $this->logger?->info('Trakt: access token refreshed');
+        $this->logger->info('Trakt: access token refreshed');
 
         return true;
     }
@@ -1165,7 +1173,7 @@ class TraktPlugin implements LifecycleInterface, ConfigurableInterface
      */
     private function refreshAfterAuthFailure(TraktAuthenticationException $e, string $context): bool
     {
-        $this->logger?->warning('Trakt: ' . $context . ' failed (auth); attempting token refresh', [
+        $this->logger->warning('Trakt: ' . $context . ' failed (auth); attempting token refresh', [
             'error' => $e->getMessage(),
         ]);
 
@@ -1176,7 +1184,7 @@ class TraktPlugin implements LifecycleInterface, ConfigurableInterface
 
         $refreshToken = $this->settings->refreshToken;
         if ($refreshToken === null || $refreshToken === '') {
-            $this->logger?->warning('Trakt: cannot refresh after auth failure; no refresh token available');
+            $this->logger->warning('Trakt: cannot refresh after auth failure; no refresh token available');
             return false;
         }
 
@@ -1214,14 +1222,14 @@ class TraktPlugin implements LifecycleInterface, ConfigurableInterface
             try {
                 $tokens = $api->refreshAccessToken($refreshToken);
             } catch (TraktApiException $refreshError) {
-                $this->logger?->warning('Trakt: token refresh after auth failure failed', [
+                $this->logger->warning('Trakt: token refresh after auth failure failed', [
                     'error' => $refreshError->getMessage(),
                 ]);
                 return false;
             }
 
             $this->applyRefreshedTokens($tokens);
-            $this->logger?->info('Trakt: token refreshed after auth failure');
+            $this->logger->info('Trakt: token refreshed after auth failure');
 
             return true;
         } finally {
@@ -1251,7 +1259,7 @@ class TraktPlugin implements LifecycleInterface, ConfigurableInterface
             // a bogus one, but never silently — a refresh that can say nothing
             // about validity is worth a loud line (the next call re-checks
             // expiry against the old value and refreshes again).
-            $this->logger?->warning(
+            $this->logger->warning(
                 'Trakt: token refresh response carried no usable expires_in; keeping previous expiry'
             );
         }
@@ -1282,7 +1290,7 @@ class TraktPlugin implements LifecycleInterface, ConfigurableInterface
     private function persistSettings(): void
     {
         if ($this->settingsRepository === null) {
-            $this->logger?->warning('Trakt: no settings repository available; token changes not persisted');
+            $this->logger->warning('Trakt: no settings repository available; token changes not persisted');
             return;
         }
 
@@ -1290,7 +1298,7 @@ class TraktPlugin implements LifecycleInterface, ConfigurableInterface
             // Graceful degrade (S1): no cipher/key available, so the tokens are
             // stored as-is. We still persist (losing tokens on restart would be
             // worse), but warn so the operator can configure a key.
-            $this->logger?->warning('Trakt: no token cipher available; storing OAuth tokens unencrypted');
+            $this->logger->warning('Trakt: no token cipher available; storing OAuth tokens unencrypted');
         }
 
         try {
@@ -1298,7 +1306,7 @@ class TraktPlugin implements LifecycleInterface, ConfigurableInterface
             // for access/refresh tokens, never the raw long-lived credentials.
             $this->settingsRepository->save($this->settings->toStorageArray($this->tokenCipher));
         } catch (\Throwable $e) {
-            $this->logger?->warning('Trakt: failed to persist settings', [
+            $this->logger->warning('Trakt: failed to persist settings', [
                 'error' => $e->getMessage(),
             ]);
         }
@@ -1452,7 +1460,7 @@ class TraktPlugin implements LifecycleInterface, ConfigurableInterface
             return;
         }
 
-        $entry = $this->watchHistory->getForMediaItem('default', $mediaItemId);
+        $entry = $this->watchHistory->getForMediaItem(self::DEFAULT_PROFILE_ID, $mediaItemId);
         $progress = $entry['progress_percent'] ?? 0;
         if ($entry === null || !is_numeric($progress) || (float) $progress < 90.0) {
             return;
@@ -1588,7 +1596,7 @@ class TraktPlugin implements LifecycleInterface, ConfigurableInterface
         }
 
         if (!$this->enabled) {
-            $this->logger?->debug('Trakt: master switch disabled, skipping scheduled sync');
+            $this->logger->debug('Trakt: master switch disabled, skipping scheduled sync');
 
             return;
         }
@@ -1601,7 +1609,7 @@ class TraktPlugin implements LifecycleInterface, ConfigurableInterface
             // Use the default profile for now (per-profile sync is future work).
             $this->pullHistoryWithAuthRecovery(self::DEFAULT_PROFILE_ID);
         } catch (\Throwable $e) {
-            $this->logger?->warning('Trakt periodic sync failed', [
+            $this->logger->warning('Trakt periodic sync failed', [
                 'error' => $e->getMessage(),
             ]);
         }
@@ -1636,7 +1644,7 @@ class TraktPlugin implements LifecycleInterface, ConfigurableInterface
     private function pullHistoryWithAuthRecovery(string $profileId): int
     {
         if (!$this->ensureFreshToken()) {
-            $this->logger?->warning(
+            $this->logger->warning(
                 'Trakt: history pull skipped; expired access token and failed refresh'
                 . ' (manual re-authorization required)'
             );
@@ -1655,7 +1663,7 @@ class TraktPlugin implements LifecycleInterface, ConfigurableInterface
             try {
                 return $this->makeHistorySync()->syncTraktToPhlix($profileId);
             } catch (TraktAuthenticationException $retryAuth) {
-                $this->logger?->error(
+                $this->logger->error(
                     'Trakt: history pull still unauthorized after refresh; manual re-authorization required',
                     ['error' => $retryAuth->getMessage()],
                 );
