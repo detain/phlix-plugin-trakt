@@ -152,6 +152,17 @@ class TraktPlugin implements LifecycleInterface, ConfigurableInterface
     private TraktSettings $settings;
 
     /**
+     * The verbatim array last passed to {@see self::configure()}, or null
+     * when configure() has never run. Kept so {@see self::onEnable()} can
+     * re-hydrate the settings once the token cipher is resolved: the host
+     * loader delivers configure() first, while the cipher only arrives in
+     * onEnable() (PG-126, review trakt__srphp #2 [Major]).
+     *
+     * @var array<string, mixed>|null
+     */
+    private ?array $configuredSettings = null;
+
+    /**
      * @param TraktSettings|null $settings Initial settings (loaded from DB on enable)
      * @param LoggerInterface|null $logger Optional PSR-3 logger
      * @param TraktApi|null $api Pre-built API client (test seam; production builds it in onEnable())
@@ -178,6 +189,11 @@ class TraktPlugin implements LifecycleInterface, ConfigurableInterface
      * Configure the plugin from a settings array (persisted in the DB
      * by the plugin loader and passed back on enable).
      *
+     * The verbatim array is retained for re-hydration once onEnable() has
+     * resolved the token cipher (PG-126 — the host delivers configure()
+     * BEFORE onEnable(), so this first pass may run cipher-less; see
+     * {@see self::onEnable()}).
+     *
      * @param array<string, mixed> $settings Key-value settings from plugins.settings_json
      *
      * @return void
@@ -186,11 +202,32 @@ class TraktPlugin implements LifecycleInterface, ConfigurableInterface
      */
     public function configure(array $settings): void
     {
-        // Decrypt tokens on the way in when a cipher is available (they are
-        // written encrypted by persistSettings()). When no cipher is present
-        // fromArray() takes the token fields verbatim, and the cipher itself
-        // passes through any value it does not recognise as its own ciphertext
-        // (legacy plaintext), so upgrades load correctly either way.
+        $this->configuredSettings = $settings;
+        $this->hydrateSettings($settings);
+        $this->enabled = ($settings['enabled'] ?? false) === true;
+    }
+
+    /**
+     * Hydrate {@see $settings} from a configure()-shaped array, decrypting
+     * the token fields through the currently resolved cipher (if any).
+     *
+     * Split out of {@see self::configure()} so onEnable() can re-run the
+     * SAME hydration after the cipher is resolved without re-applying the
+     * master switch (PG-126, review trakt__srphp #2 [Major]).
+     *
+     * Decrypt tokens on the way in when a cipher is available (they are
+     * written encrypted by persistSettings()). When no cipher is present
+     * fromArray() takes the token fields verbatim, and the cipher itself
+     * passes through any value it does not recognise as its own ciphertext
+     * (legacy plaintext), so upgrades load correctly either way — and a
+     * re-hydration is idempotent for plaintext either direction.
+     *
+     * @param array<string, mixed> $settings Key-value settings array
+     *
+     * @return void
+     */
+    private function hydrateSettings(array $settings): void
+    {
         try {
             $this->settings = TraktSettings::fromArray($settings, $this->tokenCipher);
         } catch (TokenDecryptionFailedException $e) {
@@ -215,7 +252,6 @@ class TraktPlugin implements LifecycleInterface, ConfigurableInterface
                 username: $fallback->username,
             );
         }
-        $this->enabled = ($settings['enabled'] ?? false) === true;
     }
 
     /**
@@ -264,6 +300,21 @@ class TraktPlugin implements LifecycleInterface, ConfigurableInterface
 
         $this->resolveSettingsRepository($container);
         $this->resolveTokenCipher($container);
+
+        // PG-126 (review trakt__srphp #2 [Major]): the host's PluginLoader
+        // delivers configure() BEFORE onEnable(), so the boot hydration ran
+        // while $this->tokenCipher was still null and the at-rest envelopes
+        // came through verbatim into memory. Re-run the SAME token hydration
+        // now that the cipher exists. decrypt() passes values it does not
+        // recognise as its own ciphertext through unchanged, so re-hydrating
+        // plaintext (or a constructor-injected cipher that already decrypted)
+        // is idempotent. When configure() never ran (services injected
+        // directly — test seams), there is nothing to re-read and the
+        // injected settings stay untouched. This runs BEFORE initApi() and
+        // the timer arm because both gate on settings->isConfigured().
+        if ($this->configuredSettings !== null) {
+            $this->hydrateSettings($this->configuredSettings);
+        }
 
         // WIRE: construct the API client only (no auth exchange, no request).
         $this->initApi();

@@ -227,6 +227,81 @@ final class TraktPluginTest extends TestCase
     }
 
     /**
+     * PG-126 (review trakt__srphp #2 [Major]): the host's PluginLoader
+     * delivers configure() BEFORE onEnable() (phlix-server
+     * src/Plugins/PluginLoader.php, "Deliver the persisted settings to the
+     * plugin BEFORE onEnable()"), but the token cipher is only resolved
+     * INSIDE onEnable() — so the boot hydration ran with a null cipher and
+     * the at-rest envelopes stayed verbatim in settings->accessToken.
+     * Nothing re-hydrated after the cipher arrived, and the
+     * TokenDecryptionFailedException guard in configure() can never fire
+     * for the container-resolved cipher (no cipher, no exception) — every
+     * later Bearer call loops the envelope into 400/401s.
+     *
+     * The pre-fix suite hid the hole by injecting the cipher through the
+     * constructor — a seam production never uses. This test drives the REAL
+     * loader order with NO constructor cipher.
+     */
+    public function testTokensAreDecryptedWhenTheCipherResolvesAfterConfigure(): void
+    {
+        $cipher = new RecordingCipher();
+
+        $storage = (new TraktSettings(
+            accessToken: 'boot-access',
+            refreshToken: 'boot-refresh',
+            expiresAt: time() + 3600,
+            username: 'testuser',
+        ))->toStorageArray($cipher);
+
+        // The persisted payload must be ciphertext, else the fixture proves nothing.
+        $this->assertSame('ENC(' . base64_encode('boot-access') . ')', $storage['access_token']);
+
+        $plugin = new TraktPlugin(logger: new NullLogger());
+        $plugin->configure(['enabled' => true] + $storage);
+
+        // Before onEnable the cipher is null by loader design: the envelope is
+        // all the plugin can hold at this point (verbatim — that alone is not
+        // the bug; the bug is that it stayed this way).
+        $this->assertStringStartsWith('ENC(', (string) $plugin->getSettings()->accessToken);
+
+        // The host resolves the cipher exactly here — after configure() ran.
+        $plugin->onEnable(new StubContainer([TokenCipher::class => $cipher]));
+
+        $settings = $plugin->getSettings();
+        $this->assertSame(
+            'boot-access',
+            $settings->accessToken,
+            'tokens hydrated while the cipher was still null must be re-read through the resolved cipher'
+        );
+        $this->assertSame('boot-refresh', $settings->refreshToken);
+        $this->assertTrue($settings->isConfigured(), 'the account must read as linked, not as an envelope');
+    }
+
+    /**
+     * PG-126 companion law: re-hydration must NOT resurrect stale
+     * configure() input over settings injected directly (constructor seam,
+     * or a configure() call that never happened). onEnable() without a
+     * preceding configure() leaves the injected settings untouched.
+     */
+    public function testOnEnableWithoutConfigureKeepsConstructorSettingsUntouched(): void
+    {
+        $cipher = new RecordingCipher();
+        $plugin = new TraktPlugin(
+            settings: new TraktSettings(
+                accessToken: 'injected-access',
+                refreshToken: 'injected-refresh',
+                username: 'testuser',
+            ),
+            logger: new NullLogger(),
+        );
+
+        $plugin->onEnable(new StubContainer([TokenCipher::class => $cipher]));
+
+        $this->assertSame('injected-access', $plugin->getSettings()->accessToken);
+        $this->assertSame('injected-refresh', $plugin->getSettings()->refreshToken);
+    }
+
+    /**
      * M-TRAKT-20 (srphp m12): when configure() receives envelopes encrypted
      * under a DIFFERENT key (operator key rotation), the plugin must degrade
      * to UNCONNECTED — prefs survive, tokens are dropped so hasTokens() is
