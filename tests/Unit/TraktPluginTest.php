@@ -490,10 +490,9 @@ final class TraktPluginTest extends TestCase
      * MASTER SWITCH (review trakt__docmaint M1): a tick with the plugin's
      * `enabled` master off must NOT pull Trakt history, no matter how the
      * per-feature `sync_enabled` toggle and credentials read. The README
-     * Settings table and plugin.json sell `enabled` as "Master on/off for
-     * Trakt scrobbling and
-     * sync"; the scheduled pull used to ignore it and kept reconciling
-     * WatchHistory every tick with the switch off.
+     * Settings table and plugin.json sell `enabled` as "Trakt scrobbling
+     * and sync master on/off"; the scheduled pull used to ignore it and kept
+     * reconciling WatchHistory every tick with the switch off.
      *
      * Mutation-proven: reverting the `!$this->enabled` guard in
      * runScheduledSync() reddens this test (the seam records 'default').
