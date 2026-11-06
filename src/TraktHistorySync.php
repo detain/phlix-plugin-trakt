@@ -212,7 +212,7 @@ class TraktHistorySync
                 // rating-pull defect (review trakt__srphp C2). Preserving
                 // local state is the only non-destructive option.
                 $this->logger->warning(
-                    'TraktHistorySync: no duration from Trakt or local metadata; skipping write to preserve local progress',
+                    'TraktHistorySync: no Trakt or local duration; skipping write to preserve local progress',
                     ['media_item_id' => $mediaItemId]
                 );
                 continue;
