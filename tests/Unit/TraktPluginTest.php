@@ -1635,6 +1635,77 @@ final class TraktPluginTest extends TestCase
             positionTicks: 5_000_000,
         );
     }
+
+    /**
+     * PG-128 end-to-end: the operator config read at the composition root
+     * (initApi) is THE source for the OAuth redirect URI — the API client it
+     * builds must carry the configured value verbatim, not a value re-read
+     * through a second raw include inside TraktApi.
+     */
+    public function testInitApiFeedsTheOperatorRedirectUriToTheApiClient(): void
+    {
+        $plugin = new TraktPlugin(null, new CapturingLogger());
+        $config = [
+            'client_id' => 'cid-1',
+            'client_secret' => 'sec-1',
+            'redirect_uri' => 'https://cfg.example/api/v1/oauth/trakt/callback',
+        ];
+
+        (new \ReflectionMethod(TraktPlugin::class, 'initApi'))->invoke($plugin, $config);
+
+        $api = (new \ReflectionProperty(TraktPlugin::class, 'api'))->getValue($plugin);
+        $this->assertNotNull($api, 'operator credentials must build the API client');
+
+        $authUrl = $api->getAuthUrl('state-x', 'verifier-y');
+        $this->assertStringContainsString(rawurlencode($config['redirect_uri']), $authUrl);
+        $this->assertStringNotContainsString('localhost', $authUrl);
+    }
+
+    /**
+     * PG-128 fail-loud: with an empty operator config initApi() used to
+     * decline in total silence; the missing keys must be named.
+     */
+    public function testInitApiWarnsNamingMissingOperatorCredentials(): void
+    {
+        $logger = new CapturingLogger();
+        $plugin = new TraktPlugin(null, $logger);
+
+        (new \ReflectionMethod(TraktPlugin::class, 'initApi'))->invoke($plugin, []);
+
+        $this->assertNull((new \ReflectionProperty(TraktPlugin::class, 'api'))->getValue($plugin));
+        $joined = implode("\n", $logger->warnings);
+        $this->assertStringContainsString('client_id', $joined);
+        $this->assertStringContainsString('client_secret', $joined);
+    }
+
+    /**
+     * PG-128 fallback law: when the operator config carries no usable
+     * redirect_uri the historic literal default stays byte-ident (law (d)),
+     * but the fallback must now be announced, and an empty-string value is
+     * normalized to "absent" (the shadow loader used to pass '' through).
+     */
+    public function testInitApiAnnouncesRedirectUriFallbackAndNormalizesEmpty(): void
+    {
+        $logger = new CapturingLogger();
+        $plugin = new TraktPlugin(null, $logger);
+
+        (new \ReflectionMethod(TraktPlugin::class, 'initApi'))->invoke($plugin, [
+            'client_id' => 'cid-1',
+            'client_secret' => 'sec-1',
+            'redirect_uri' => '',
+        ]);
+
+        $api = (new \ReflectionProperty(TraktPlugin::class, 'api'))->getValue($plugin);
+        $this->assertNotNull($api);
+
+        $authUrl = $api->getAuthUrl('state-x', 'verifier-y');
+        $this->assertStringContainsString(
+            rawurlencode('https://localhost/api/v1/oauth/trakt/callback'),
+            $authUrl,
+            'the fallback literal must not drift'
+        );
+        $this->assertStringContainsString('redirect_uri', implode("\n", $logger->warnings));
+    }
 }
 
 /**
@@ -2126,5 +2197,22 @@ final class RecordingHistorySync extends TraktHistorySync
         }
 
         return $this->returnValue;
+    }
+}
+
+/**
+ * PSR-3 logger that records warning messages for assertions (PG-128).
+ *
+ * Signature mirrors NullLogger's loose parameter typing so it stays
+ * compatible across psr/log majors.
+ */
+final class CapturingLogger extends NullLogger
+{
+    /** @var list<string> */
+    public array $warnings = [];
+
+    public function warning($message, array $context = []): void
+    {
+        $this->warnings[] = (string) $message;
     }
 }

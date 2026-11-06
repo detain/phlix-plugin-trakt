@@ -625,6 +625,42 @@ final class TraktApiTest extends TestCase
             metadata: ['trakt_id' => 1, 'imdb_id' => 'tt0000001', 'tmdb_id' => 42],
         );
     }
+
+    /**
+     * PG-128: the OAuth redirect URI must arrive through the constructor
+     * (one normalized source, owned by TraktPlugin::initApi) instead of a
+     * second raw config read inside the API client.
+     */
+    public function testConfiguredRedirectUriIsCarriedIntoTheAuthRequest(): void
+    {
+        $http = new MockHttpClient();
+        $custom = 'https://cfg.example/api/v1/oauth/trakt/callback';
+        $api = new TraktApi($http, self::CLIENT_ID, self::CLIENT_SECRET, new NullLogger(), $custom);
+
+        $authUrl = $api->getAuthUrl('s', 'v');
+
+        $this->assertStringContainsString(rawurlencode($custom), $authUrl);
+        $this->assertStringNotContainsString(rawurlencode('https://localhost/api/v1/oauth/trakt/callback'), $authUrl);
+    }
+
+    /**
+     * PG-128 structural law: TraktApi must not keep private shadow loaders
+     * of the operator config — two readers of one credential file is how
+     * drift and unnormalized values get into the OAuth handshake.
+     */
+    public function testTraktApiCarriesNoShadowOperatorConfigLoader(): void
+    {
+        $reflection = new \ReflectionClass(TraktApi::class);
+
+        $this->assertFalse(
+            $reflection->hasMethod('loadConfig'),
+            'TraktApi must not read the operator config file itself (single normalized source)'
+        );
+        $this->assertFalse(
+            $reflection->hasMethod('getRedirectUri'),
+            'redirect URI resolution belongs to the composition root, not the API client'
+        );
+    }
 }
 
 /**

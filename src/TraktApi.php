@@ -29,21 +29,40 @@ class TraktApi
 {
     private const BASE_URL = 'https://api.trakt.tv';
 
+    /**
+     * Historic literal OAuth callback default. PG-128 promoted it to a
+     * public constant so the value has exactly one home: the composition
+     * root (TraktPlugin::initApi) normalizes the operator config and passes
+     * a URI in, and this is the only fallback the API client can ever use.
+     * The literal itself is deliberately unchanged (law: keep the wire
+     * value byte-ident to what deployments already registered with Trakt).
+     */
+    public const DEFAULT_REDIRECT_URI = 'https://localhost/api/v1/oauth/trakt/callback';
+
     private readonly LoggerInterface $logger;
+
+    private readonly string $redirectUri;
 
     /**
      * @param HttpClientInterface $http HTTP client for API requests
      * @param string $clientId Trakt.tv application client ID
      * @param string $clientSecret Trakt.tv application client secret
      * @param LoggerInterface|null $logger Optional PSR-3 logger
+     * @param string|null $redirectUri Normalized OAuth redirect URI (PG-128:
+     *                                 single source is the operator config,
+     *                                 resolved by the composition root; null
+     *                                 keeps the historic default for
+     *                                 programmatic/test constructions)
      */
     public function __construct(
         private readonly HttpClientInterface $http,
         private readonly string $clientId,
         private readonly string $clientSecret,
         ?LoggerInterface $logger = null,
+        ?string $redirectUri = null,
     ) {
         $this->logger = $logger ?? new NullLogger();
+        $this->redirectUri = $redirectUri ?? self::DEFAULT_REDIRECT_URI;
     }
 
     /**
@@ -88,7 +107,7 @@ class TraktApi
         $codeChallenge = $this->base64UrlEncode(hash('sha256', $codeVerifier, true));
         $params = [
             'client_id' => $this->clientId,
-            'redirect_uri' => $this->getRedirectUri(),
+            'redirect_uri' => $this->redirectUri,
             'response_type' => 'code',
             'state' => $state,
             'code_challenge' => $codeChallenge,
@@ -115,7 +134,7 @@ class TraktApi
             'code' => $code,
             'client_id' => $this->clientId,
             'client_secret' => $this->clientSecret,
-            'redirect_uri' => $this->getRedirectUri(),
+            'redirect_uri' => $this->redirectUri,
             'grant_type' => 'authorization_code',
             'code_verifier' => $codeVerifier,
         ];
@@ -164,7 +183,7 @@ class TraktApi
             'refresh_token' => $refreshToken,
             'client_id' => $this->clientId,
             'client_secret' => $this->clientSecret,
-            'redirect_uri' => $this->getRedirectUri(),
+            'redirect_uri' => $this->redirectUri,
             'grant_type' => 'refresh_token',
         ];
 
@@ -692,40 +711,6 @@ class TraktApi
 
         /** @var array<string, mixed> */
         return $response;
-    }
-
-    /**
-     * Get the configured redirect URI.
-     *
-     * @return string
-     */
-    private function getRedirectUri(): string
-    {
-        $config = $this->loadConfig();
-        $redirectUri = $config['redirect_uri'] ?? null;
-
-        return is_string($redirectUri)
-            ? $redirectUri
-            : 'https://localhost/api/v1/oauth/trakt/callback';
-    }
-
-    /**
-     * Load Trakt configuration.
-     *
-     * @return array<string, mixed>
-     */
-    private function loadConfig(): array
-    {
-        $configFile = dirname(__DIR__, 5) . '/config/scrobblers/trakt.php';
-
-        if (is_file($configFile)) {
-            /** @var array<string, mixed> $config */
-            $config = include $configFile;
-
-            return $config;
-        }
-
-        return [];
     }
 
     /**

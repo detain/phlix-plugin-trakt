@@ -1366,29 +1366,70 @@ class TraktPlugin implements LifecycleInterface, ConfigurableInterface
     }
 
     /**
-     * Initialize the Trakt API client from current settings.
+     * Build the TraktApi from the operator config — the composition root and
+     * the single normalized source of OAuth client credentials (PG-128).
+     *
+     * TraktApi used to re-read `/config/scrobblers/trakt.php` through its own
+     * private include chain, so the redirect URI existed in two readers with
+     * two normalization rules (the shadow copy even accepted an empty
+     * string). One reader now normalizes and injects. Missing credentials
+     * used to decline in total silence — that ends here too: the plugin logs
+     * which keys are missing instead of dying quiet.
+     *
+     * @param array<string, mixed>|null $operatorConfig Config overlay seam for
+     *                                                  tests; null loads the
+     *                                                  operator config file
      *
      * @return void
      */
-    private function initApi(): void
+    private function initApi(?array $operatorConfig = null): void
     {
         if ($this->api !== null) {
             return;
         }
 
-        $config = $this->loadConfig();
+        $config = $operatorConfig ?? $this->loadConfig();
 
         $clientId = is_string($config['client_id'] ?? null) ? $config['client_id'] : '';
         $clientSecret = is_string($config['client_secret'] ?? null) ? $config['client_secret'] : '';
 
-        if ($clientId !== '' && $clientSecret !== '') {
-            $this->api = new TraktApi(
-                new HttpClient(),
-                $clientId,
-                $clientSecret,
-                $this->logger
+        $missing = [];
+        if ($clientId === '') {
+            $missing[] = 'client_id';
+        }
+        if ($clientSecret === '') {
+            $missing[] = 'client_secret';
+        }
+
+        if ($missing !== []) {
+            $this->logger->warning(
+                'Trakt: operator config is missing ' . implode(', ', $missing)
+                . '; Trakt OAuth API client was not initialized'
+            );
+            return;
+        }
+
+        // Empty string is normalized to "absent": it is not a URI, and the
+        // shadow loader used to hand it to Trakt verbatim.
+        $configuredRedirect = $config['redirect_uri'] ?? null;
+        $redirectUri = is_string($configuredRedirect) && $configuredRedirect !== ''
+            ? $configuredRedirect
+            : null;
+
+        if ($redirectUri === null) {
+            $this->logger->warning(
+                'Trakt: operator config has no redirect_uri; falling back to the built-in default',
+                ['default' => TraktApi::DEFAULT_REDIRECT_URI]
             );
         }
+
+        $this->api = new TraktApi(
+            new HttpClient(),
+            $clientId,
+            $clientSecret,
+            $this->logger,
+            $redirectUri
+        );
     }
 
     /**
