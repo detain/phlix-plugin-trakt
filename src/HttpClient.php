@@ -21,8 +21,9 @@ class HttpClient implements HttpClientInterface
      * PG-125: the client used to be constructed per request (paying the pool
      * setup each time) while now being reused — one instance per distinct
      * peer host, because the strict TLS context pins `peer_name` at
-     * construction and the plugin talks to more than one Trakt host
-     * (api.trakt.tv for the API, login.trakt.tv for OAuth).
+     * construction, so an instance can only ever serve its own peer.
+     * Production speaks to a single host (api.trakt.tv, OAuth exchanges
+     * included); the suite exercises the per-peer keying with a second one.
      *
      * @var array<string, \Workerman\Http\Client>
      */
@@ -146,8 +147,9 @@ class HttpClient implements HttpClientInterface
      * The strict TLS context carries a pinned `peer_name`, so the pool key is
      * the host: every request to the same peer reuses the same client (and
      * its connection pool) instead of paying per-request construction, while
-     * a second peer (api.trakt.tv vs login.trakt.tv) still verifies against
-     * its own name.
+     * a request to a different peer gets its own client and still verifies
+     * against its own name. Production serves the single api.trakt.tv peer;
+     * the suite exercises the second-peer path.
      *
      * @param string $host TLS peer host taken from the request URL
      */
@@ -279,8 +281,10 @@ class HttpClient implements HttpClientInterface
     /**
      * Blocking cURL request — CLI/test/single-shot fallback only.
      *
-     * Used when no event loop is running (see {@see self::eventLoopRunning()}),
-     * where there is nothing to yield to and a synchronous round-trip is correct.
+     * Used when the async transport is unusable (see
+     * {@see self::asyncTransportUsable()}): no coroutine inside a running
+     * loop to yield to, or https under the Swoole loop where async TLS
+     * reads stall. There a synchronous round-trip is the correct choice.
      *
      * @param string $method HTTP method
      * @param string $url Full URL
