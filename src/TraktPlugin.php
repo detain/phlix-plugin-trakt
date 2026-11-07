@@ -312,6 +312,18 @@ class TraktPlugin implements LifecycleInterface, ConfigurableInterface
             $this->hydrateSettings($this->configuredSettings);
         }
 
+        // PG-139 (review trakt__srphp m19): announce the custody gap at
+        // BOOT, once the settings are finally hydrated and the linked
+        // state is knowable — the persist-time ERROR (and the refresh
+        // refusal) only fire once a rotation is already attempted.
+        if ($this->settingsRepository === null && $this->settings->hasTokens()) {
+            $this->logger->error(
+                'Trakt: linked account but no settings writer is bound; token rotation is disabled to'
+                . ' protect the credential (bind ' . TraktSettingsRepository::class
+                . ' or re-link after restoring it)'
+            );
+        }
+
         // WIRE: construct the API client only (no auth exchange, no request).
         $this->initApi();
 
@@ -326,8 +338,11 @@ class TraktPlugin implements LifecycleInterface, ConfigurableInterface
      *
      * Mirrors the plugin's existing optional-service pattern: the host is not
      * required to bind a {@see TraktSettingsRepository}. When it is missing we
-     * leave the writer null and rotated tokens persist as a no-op (with a
-     * warning logged at persist time) rather than hard-failing.
+     * leave the writer null rather than hard-failing — but it is no longer a
+     * silent degradation for a LINKED account: PG-139 made the absent writer
+     * a hard precondition of token rotation (the exchange is refused before
+     * it can strand a one-time credential), announced at boot and at persist
+     * time with ERROR-level lines.
      *
      * @param ContainerInterface $container Host PSR-11 container
      *
@@ -613,7 +628,7 @@ class TraktPlugin implements LifecycleInterface, ConfigurableInterface
         // runs when reachedEnd=true, which is already a terminal event for
         // this playback session, so blocking is acceptable there.
         if ($event->reachedEnd && $this->watchHistory !== null) {
-            $this->syncToTrakt($event->mediaItemId, $event->finalPositionTicks);
+            $this->syncToTrakt($event->mediaItemId);
         }
     }
 
@@ -1013,6 +1028,21 @@ class TraktPlugin implements LifecycleInterface, ConfigurableInterface
             return false;
         }
 
+        // PG-139 (review trakt__srphp m19): HARD PRECONDITION once linked.
+        // Trakt ONE-TIME rotates the refresh token per exchange: without a
+        // settings writer the rotated pair lives only in this process's
+        // memory, the next boot resurrects the now-dead pair from storage,
+        // and the link dies silently — strictly worse than never rotating.
+        // Preserve the still-valid credential and name the gap loudly; the
+        // expiry then degrades through the PG-132 skip-arms everywhere.
+        if ($this->settingsRepository === null) {
+            $this->logger->error(
+                'Trakt: cannot rotate tokens without a settings writer; refresh aborted to preserve the'
+                . ' credential (bind ' . TraktSettingsRepository::class . ' or re-link after restoring it)'
+            );
+            return false;
+        }
+
         try {
             $tokens = $this->api->refreshAccessToken($refreshToken);
         } catch (TraktApiException $e) {
@@ -1231,15 +1261,25 @@ class TraktPlugin implements LifecycleInterface, ConfigurableInterface
     /**
      * Persist the current settings via the host-provided writer.
      *
-     * Tolerates the absence of a {@see TraktSettingsRepository}: when none was
-     * injected/resolved it logs a warning and no-ops rather than crashing, so
-     * the host is never forced to provide persistence.
+     * Tolerates the absence of a {@see TraktSettingsRepository} for an
+     * UNLINKED plugin (nothing to custody — a warning-level no-op). Once
+     * the settings carry a token pair, a dropped write is credential
+     * custody loss, not a cosmetic persistence miss: PG-139 escalated the
+     * no-writer log to ERROR there, and the actual rotation is refused
+     * before it can strand a credential ({@see self::performTokenRefresh}).
      *
      * @return void
      */
     private function persistSettings(): void
     {
         if ($this->settingsRepository === null) {
+            if ($this->settings->hasTokens()) {
+                $this->logger->error(
+                    'Trakt: no settings writer available; token changes not persisted (credential custody'
+                    . ' at risk — bind ' . TraktSettingsRepository::class . ' or re-link after restoring it)'
+                );
+                return;
+            }
             $this->logger->warning('Trakt: no settings repository available; token changes not persisted');
             return;
         }
@@ -1440,11 +1480,10 @@ class TraktPlugin implements LifecycleInterface, ConfigurableInterface
      * ever attempted — and never told anyone.
      *
      * @param string $mediaItemId Media item ID
-     * @param int $positionTicks Final position
      *
      * @return void
      */
-    private function syncToTrakt(string $mediaItemId, int $positionTicks): void
+    private function syncToTrakt(string $mediaItemId): void
     {
         if ($this->watchHistory === null || $this->api === null || $this->db === null) {
             return;
@@ -1462,7 +1501,7 @@ class TraktPlugin implements LifecycleInterface, ConfigurableInterface
         $duration = is_numeric($durationTicks) ? (int) $durationTicks : null;
 
         try {
-            $this->pushCompletedHistory($mediaItemId, $watchedAt, $positionTicks, $duration);
+            $this->pushCompletedHistory($mediaItemId, $watchedAt, $duration);
 
             return;
         } catch (TraktAuthenticationException $e) {
@@ -1481,7 +1520,7 @@ class TraktPlugin implements LifecycleInterface, ConfigurableInterface
                 // Fresh sync on CURRENT settings — the rotated token lives
                 // in $this->settings now; a cached sync would replay the
                 // dead credential the refresh just replaced.
-                $this->pushCompletedHistory($mediaItemId, $watchedAt, $positionTicks, $duration);
+                $this->pushCompletedHistory($mediaItemId, $watchedAt, $duration);
             } catch (TraktAuthenticationException $retryAuth) {
                 $this->logger->error(
                     'Trakt: history push still unauthorized after refresh; manual re-authorization required',
@@ -1501,7 +1540,6 @@ class TraktPlugin implements LifecycleInterface, ConfigurableInterface
      *
      * @param string $mediaItemId Media item that completed
      * @param string $watchedAt Last-watched timestamp (string form)
-     * @param int $positionTicks Final position
      * @param int|null $durationTicks Total duration when known
      *
      * @return bool True when Trakt accepted the push.
@@ -1512,13 +1550,11 @@ class TraktPlugin implements LifecycleInterface, ConfigurableInterface
     private function pushCompletedHistory(
         string $mediaItemId,
         string $watchedAt,
-        int $positionTicks,
         ?int $durationTicks
     ): bool {
         return $this->makeHistorySync()->syncPhlixToTrakt(
             $mediaItemId,
             $watchedAt,
-            $positionTicks,
             $durationTicks
         );
     }

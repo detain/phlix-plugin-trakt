@@ -67,9 +67,33 @@ final class TraktApiTest extends TestCase
         $http = new MockHttpClient([$history]);
         $api = new TraktApi($http, self::CLIENT_ID, self::CLIENT_SECRET, new NullLogger());
 
-        $result = $api->getWatchedHistory('testuser', 1, 100, 'access-token');
+        $result = $api->getWatchedHistory('testuser', 'access-token', 1, 100);
 
         $this->assertSame($history, $result);
+    }
+
+    /**
+     * PG-140 (review trakt__srphp m20 [Info]): getWatchedHistory was the
+     * only credential-taking method on this surface with a DEFAULTED token —
+     * omitting it dialed /users/{id}/history unauthenticated for a silent
+     * 401-shaped surprise. The token is now REQUIRED and leads in sibling
+     * dialect (exactly getRatings: username, token, then paging). On the
+     * parent this pin is RED: accessToken sits last AND is optional.
+     */
+    public function testGetWatchedHistoryRequiresTheAccessTokenInSiblingPosition(): void
+    {
+        $params = (new \ReflectionMethod(TraktApi::class, 'getWatchedHistory'))->getParameters();
+
+        $this->assertSame(
+            ['username', 'accessToken', 'page', 'limit'],
+            array_map(static fn (\ReflectionParameter $p): string => $p->getName(), $params),
+        );
+        $this->assertFalse(
+            $params[1]->isOptional(),
+            'PG-140: the access token must be required, like every sibling endpoint',
+        );
+        $this->assertTrue($params[2]->isOptional(), 'paging keeps its defaults');
+        $this->assertTrue($params[3]->isOptional(), 'paging keeps its defaults');
     }
 
     public function testExchangeCodeThrowsOnError(): void
@@ -131,7 +155,7 @@ final class TraktApiTest extends TestCase
         $http = new MockHttpClient([[]]);
         $api = new TraktApi($http, self::CLIENT_ID, self::CLIENT_SECRET, new NullLogger());
 
-        $api->getWatchedHistory('testuser', 1, 100, 'access-token');
+        $api->getWatchedHistory('testuser', 'access-token', 1, 100);
 
         $this->assertSame('GET', $http->lastMethod);
         // The pull consumes HISTORY entries (flat {watched_at, movie|episode}
@@ -205,7 +229,7 @@ final class TraktApiTest extends TestCase
         $http = new MockHttpClient([[]]);
         $api = new TraktApi($http, self::CLIENT_ID, self::CLIENT_SECRET, new NullLogger());
 
-        $api->getWatchedHistory('testuser', 1, 100, 'history-token');
+        $api->getWatchedHistory('testuser', 'history-token', 1, 100);
 
         $this->assertSame('2', $http->lastHeaders['trakt-api-version'] ?? null);
         $this->assertSame(self::CLIENT_ID, $http->lastHeaders['trakt-api-key'] ?? null);

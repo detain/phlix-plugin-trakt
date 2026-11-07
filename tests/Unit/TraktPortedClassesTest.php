@@ -5,11 +5,13 @@ declare(strict_types=1);
 namespace Phlix\Tests\Unit\Plugins\Scrobbler\Trakt;
 
 use Phlix\Plugins\Scrobbler\Trakt\DbTraktOAuthStateStore;
+use Phlix\Plugins\Scrobbler\Trakt\OAuthStateStoreUnavailableException;
 use Phlix\Plugins\Scrobbler\Trakt\TraktApiException;
 use Phlix\Plugins\Scrobbler\Trakt\TraktOAuthStateStore;
 use Phlix\Plugins\Scrobbler\Trakt\TraktOperatorConfig;
 use Phlix\Plugins\Scrobbler\Trakt\TraktRateLimitException;
 use PHPUnit\Framework\TestCase;
+use Workerman\MySQL\Connection;
 use Workerman\MySQL\TestableConnection;
 
 /**
@@ -254,6 +256,216 @@ final class TraktPortedClassesTest extends TestCase
         $result = $store->consume('state-123');
 
         $this->assertNull($result);
+    }
+
+    /**
+     * PG-137 (review trakt__srphp m14): put() json_encode'd the payload
+     * unchecked. An unencodable verifier (invalid UTF-8 — the value is
+     * attacker-influenced input traveling from the OAuth dance) produced
+     * `false`, which bound as an empty column: the row inserted fine and
+     * consume() answered "never issued" forever — a dead link with a
+     * green write path. put() must fail loudly BEFORE touching the table.
+     */
+    public function testDbStorePutFailsLoudlyWhenThePayloadCannotBeEncoded(): void
+    {
+        $db = new TestableConnection();
+        $store = new DbTraktOAuthStateStore($db);
+
+        $thrown = null;
+        try {
+            $store->put('state-bad-utf8', "\xFF\xFE not valid utf-8");
+        } catch (\Throwable $t) {
+            $thrown = $t;
+        }
+
+        $this->assertInstanceOf(
+            \RuntimeException::class,
+            $thrown,
+            'PG-137: an unencodable verifier must reject put(), not store a dead row',
+        );
+        $this->assertStringContainsString('encode', (string) $thrown?->getMessage());
+        $this->assertSame([], $db->getCalls(), 'no INSERT may be attempted with an unencodable payload');
+    }
+
+    /**
+     * PG-137: a FAILED SELECT (`query()` returns false — the upstream
+     * contract) is an infrastructure fault, not "state never issued".
+     * The parent blended it into the CSRF-null arm, so a callback hitting
+     * a broken pool read back as a replay rejection.
+     */
+    public function testDbStoreConsumeTreatsSelectFailureAsStoreUnavailableNotCsrfNull(): void
+    {
+        $db = new TestableConnection();
+        $db->setResults([false]);
+        $store = new DbTraktOAuthStateStore($db);
+
+        $this->expectException(OAuthStateStoreUnavailableException::class);
+
+        $store->consume('state-123');
+    }
+
+    /**
+     * PG-137: the row was found but its DELETE failed — the one-shot
+     * guarantee is broken and the state could replay. That is an
+     * infrastructure fault, not a verdict of "not yours"; typed failure.
+     */
+    public function testDbStoreConsumeTreatsDeleteFailureAsStoreUnavailable(): void
+    {
+        $db = new TestableConnection();
+        // SELECT returns the row, then the DELETE itself fails.
+        $db->setResults([
+            [['data' => json_encode(['code_verifier' => 'verifier-abc'])]],
+            false,
+        ]);
+        $store = new DbTraktOAuthStateStore($db);
+
+        $this->expectException(OAuthStateStoreUnavailableException::class);
+
+        $store->consume('state-123');
+    }
+
+    /**
+     * PG-137: a connection fault that THROWS was swallowed into the
+     * CSRF-null arm (`catch(Throwable) → return null`) — the register's
+     * exact complaint: "consume answers a replay rejection for an
+     * infrastructure failure". It must surface as the typed, LOUDLY
+     * logged store-unavailability fault instead.
+     */
+    public function testDbStoreConsumeMapsConnectionFaultToTypedFailureAndLogsLoudly(): void
+    {
+        $fault = new \RuntimeException('connection lost');
+        $db = new class ($fault) extends Connection {
+            public function __construct(private readonly \Throwable $queryFault)
+            {
+                parent::__construct('localhost', '3306', 'user', 'pass', 'test');
+            }
+
+            public function query(string $sql, array $params = []): array|false
+            {
+                throw $this->queryFault;
+            }
+        };
+
+        $logger = $this->createMock(\Psr\Log\LoggerInterface::class);
+        $logger->expects($this->once())->method('error')->with($this->stringContains('unavailable'));
+
+        $store = new DbTraktOAuthStateStore($db, 600, $logger);
+
+        $this->expectException(OAuthStateStoreUnavailableException::class);
+
+        $store->consume('state-123');
+    }
+
+    /**
+     * PG-137: on a dead connection even the ROLLBACK can throw. The
+     * parent let that raw rollback exception escape from inside its own
+     * catch block (register: "rollback can throw out of the handler on a
+     * dead connection anyway"). The guarded rollback must convert to the
+     * typed fault, never leak a foreign exception.
+     */
+    public function testDbStoreRollbackFaultCannotMaskTheTypedStoreFailure(): void
+    {
+        $db = new class extends Connection {
+            public function __construct()
+            {
+                parent::__construct('localhost', '3306', 'user', 'pass', 'test');
+            }
+
+            public function query(string $sql, array $params = []): array|false
+            {
+                return false; // SELECT fails; the handler takes the rollback arm
+            }
+
+            public function rollBackTrans(): void
+            {
+                throw new \RuntimeException('rollback boom');
+            }
+        };
+
+        $store = new DbTraktOAuthStateStore($db, 600, new \Psr\Log\NullLogger());
+
+        $this->expectException(OAuthStateStoreUnavailableException::class);
+
+        $store->consume('state-123');
+    }
+
+    /**
+     * PG-137 no-change pin: a genuine "no rows" SELECT (empty array) is a
+     * TRUE miss and keeps answering the CSRF-law null. Only failures
+     * change identity; the never-issued/replayed paths stay byte-ident.
+     */
+    public function testDbStoreConsumeKeepsAnsweringCsrfNullForGenuineMisses(): void
+    {
+        $db = new TestableConnection();
+        $db->setResults([[], [], []]);
+        $store = new DbTraktOAuthStateStore($db);
+
+        $this->assertNull($store->consume('never-issued'));
+    }
+
+    // --- phpstan baseline (PG-138) ------------------------------------------
+
+    /**
+     * PG-138 (review trakt__srphp m15): the static-analysis baseline used
+     * to silence whole ERROR CATEGORIES with wildcards — any new invalid
+     * type, any unverified `object::` method call, any bad instantiation
+     * passed level 9 in total silence. It is now an enumerated per-class
+     * baseline naming each host-supplied type individually. This pin
+     * keeps the file from regressing to wildcards and from losing an
+     * enumerated class on the way.
+     */
+    public function testThePhpstanBaselineEnumeratesHostClassesInsteadOfWildcards(): void
+    {
+        $neon = (string) file_get_contents(dirname(__DIR__, 2) . '/phpstan.neon');
+
+        $this->assertStringContainsString('level: 9', $neon);
+        $this->assertStringNotContainsString(
+            '.*',
+            $neon,
+            'PG-138: the baseline must enumerate concrete classes — wildcards re-silence the category',
+        );
+        $this->assertStringNotContainsString(
+            'object::',
+            $neon,
+            'PG-138: the object:: silencer stays retired; HttpClient narrows the response by type now',
+        );
+
+        foreach ([
+            'Phlix\\\\Auth\\\\WatchHistory',
+            'Phlix\\\\Media\\\\Library\\\\MediaItem',
+            'Phlix\\\\Media\\\\Library\\\\ItemRepository',
+            'Phlix\\\\Admin\\\\SettingsRepository',
+            'Phlix\\\\Common\\\\Uuid',
+            'Workerman\\\\MySQL\\\\Connection',
+            'Workerman\\\\Timer',
+            'Workerman\\\\Http\\\\Client',
+        ] as $hostClass) {
+            $this->assertStringContainsString(
+                $hostClass,
+                $neon,
+                "PG-138: enumerated baseline must name {$hostClass}",
+            );
+        }
+    }
+
+    // --- retired public surface (PG-141) -------------------------------------
+
+    /**
+     * PG-141 (review trakt__srphp m22 [Info]): TraktPluginInterface was an
+     * empty, documentation-only marker — zero references in src, tests or
+     * plugin.json, and the host never resolved it. It is deleted; this pin
+     * keeps it gone (a re-add would resurrect a seam nothing wires to).
+     */
+    public function testTheDocumentationMarkerInterfaceIsRetired(): void
+    {
+        $this->assertFileDoesNotExist(
+            dirname(__DIR__, 2) . '/src/TraktPluginInterface.php',
+            'PG-141: the empty marker interface must stay deleted',
+        );
+        $this->assertFalse(
+            class_exists('Phlix\Plugins\Scrobbler\Trakt\TraktPluginInterface', false),
+            'PG-141: the retired marker class must not be loaded from anywhere',
+        );
     }
 
     // --- TraktOperatorConfig -----------------------------------------------

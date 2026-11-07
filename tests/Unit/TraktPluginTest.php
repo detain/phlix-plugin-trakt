@@ -637,10 +637,14 @@ final class TraktPluginTest extends TestCase
     }
 
     /**
-     * (d) When no persistence writer is available, a refresh no-ops the
-     * persist (warning only) and does NOT crash; tokens still rotate in memory.
+     * (d) PG-139 flipped the old law this test used to pin: without a
+     * persistence writer the refresh is now REFUSED before the exchange —
+     * Trakt one-time-rotates the refresh token, so rotating into memory
+     * that cannot persist destroys the link at next boot. On the stop
+     * path that means no exchange call, no scrobble (the PG-132 early
+     * return), and the stored credential left byte-identical.
      */
-    public function testRefreshWithoutPersistenceWriterDoesNotCrash(): void
+    public function testRefreshWithoutPersistenceWriterIsDeclinedToPreserveTheCredential(): void
     {
         $api = new FakeTraktApi();
         $api->refreshResult = [
@@ -658,12 +662,12 @@ final class TraktPluginTest extends TestCase
 
         $plugin->onPlaybackStopped($this->stopEvent());
 
-        $this->assertSame(1, $api->refreshCalls);
-        $this->assertSame(1, $api->scrobbleStopCalls);
+        $this->assertSame(0, $api->refreshCalls, 'custody gate refuses the exchange without a writer');
+        $this->assertSame(0, $api->scrobbleStopCalls, 'declined credential short-circuits the scrobble');
 
         $settings = $plugin->getSettings();
-        $this->assertSame('rotated-access', $settings->accessToken);
-        $this->assertSame('rotated-refresh', $settings->refreshToken);
+        $this->assertSame('old-access', $settings->accessToken);
+        $this->assertSame('old-refresh', $settings->refreshToken);
     }
 
     /**
@@ -687,6 +691,87 @@ final class TraktPluginTest extends TestCase
         $this->assertSame('manual-access', $repo->saved[0]['access_token']);
         $this->assertSame('manual-refresh', $repo->saved[1]['refresh_token']);
         $this->assertSame('manual-access', $repo->saved[1]['access_token']);
+    }
+
+    /**
+     * PG-139 (review trakt__srphp m19): a refresh cycle against a null
+     * settings writer burned its own credential. Trakt ONE-TIME rotates
+     * the refresh token per exchange; without a writer the rotated pair
+     * lived only in process memory, so the next boot resurrected the
+     * EXPIRED pair from storage — a dead link that no log ever named.
+     * The missing writer is now a hard precondition once the plugin is
+     * linked: the exchange is REFUSED before it can strand a credential.
+     * On the parent this test is RED on both arms: the exchange happens
+     * (refreshCalls 1) and ensureFreshToken returns true.
+     */
+    public function testTokenRotationIsRefusedWhenRotatedTokensCannotBePersisted(): void
+    {
+        $api = new FakeTraktApi();
+
+        $plugin = new TraktPlugin($this->expiredSettings(), new NullLogger(), $api, null);
+
+        $this->assertFalse(
+            $plugin->ensureFreshToken(),
+            'PG-139: without a settings writer a linked plugin must not rotate into oblivion',
+        );
+        $this->assertSame(
+            0,
+            $api->refreshCalls,
+            'PG-139: the exchange must be refused BEFORE burning the one-time refresh token',
+        );
+    }
+
+    /**
+     * PG-139 invariant pin (green on both sides): with a writer bound,
+     * rotation works exactly as before — the precondition gates custody
+     * loss, not the refresh itself.
+     */
+    public function testTokenRotationStillProceedsWhenTheWriterExists(): void
+    {
+        $api = new FakeTraktApi();
+        $repo = new RecordingSettingsRepository();
+
+        $plugin = new TraktPlugin($this->expiredSettings(), new NullLogger(), $api, $repo);
+
+        $this->assertTrue($plugin->ensureFreshToken());
+        $this->assertSame(1, $api->refreshCalls);
+        $this->assertCount(1, $repo->saved, 'the rotated pair must land in the writer');
+    }
+
+    /**
+     * PG-139: with a linked account the no-writer persist is a credential
+     * custody incident, not a cosmetic miss — it must log at ERROR, and
+     * name the missing binding (parent logged a warning).
+     */
+    public function testManualTokenWriteWithoutWriterLogsAtErrorOnceLinked(): void
+    {
+        $logger = $this->createMock(\Psr\Log\LoggerInterface::class);
+        $logger->expects($this->once())->method('error')->with($this->stringContains('settings writer'));
+
+        $plugin = new TraktPlugin(
+            new TraktSettings(accessToken: 'a', refreshToken: 'r', username: 'u'),
+            $logger,
+            new FakeTraktApi(),
+            null,
+        );
+
+        $plugin->setAccessToken('manual-access');
+    }
+
+    /**
+     * PG-139 proportionality pin: an UNLINKED write (nothing to custody)
+     * keeps the old warning-level no-op — the escalation is about lost
+     * credentials, and there are none before the link exists.
+     */
+    public function testUnlinkedTokenWriteWithoutWriterStaysAtWarning(): void
+    {
+        $logger = $this->createMock(\Psr\Log\LoggerInterface::class);
+        $logger->expects($this->once())->method('warning')->with($this->stringContains('not persisted'));
+        $logger->expects($this->never())->method('error');
+
+        $plugin = new TraktPlugin(new TraktSettings(), $logger, new FakeTraktApi(), null);
+
+        $plugin->setRefreshToken('only-refresh');
     }
 
     /**

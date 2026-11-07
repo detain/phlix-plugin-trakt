@@ -37,6 +37,12 @@ interface TraktOAuthStateStore
      * Look up the code_verifier matching the supplied state and atomically
      * remove the entry. Returns null if no matching state exists, which
      * MUST be treated as a CSRF failure by callers.
+     *
+     * PG-137 law: null is a SECURITY verdict and may only be delivered by
+     * a store that actually answered. An implementation whose storage is
+     * unavailable (failed statement, lost connection) MUST surface that as
+     * a distinct fault — {@see OAuthStateStoreUnavailableException} for
+     * the DB-backed store — never as a silent null.
      */
     public function consume(string $state): ?string;
 }

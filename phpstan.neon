@@ -4,15 +4,39 @@ parameters:
     paths:
         - src
     treatPhpDocTypesAsCertain: false
+    # PG-138 (review trakt__srphp m15): ENUMERATED per-class baseline. The
+    # previous nine wildcard patterns silenced whole ERROR CATEGORIES at
+    # level 9 — any new invalid type, bad instantiation or
+    # unverified bare-object method call would have passed unnoticed. Every entry below
+    # names ONE concrete host-supplied class the plugin's own dependency
+    # closure does not carry (the Phlix host and its Workerman stack supply
+    # these at runtime). LAW: when src references a new host type, add its
+    # exact message here — never a wildcard, never a category.
+    # The blanket undefined-method-on-bare-object silencer is RETIRED for
+    # good: HttpClient narrows its async response structurally instead of
+    # asserting a bare object, so those calls are verified, not hidden.
     ignoreErrors:
-        # External host dependencies not available in plugin scope
-        - '#Class .* not found#'
-        - '#Call to (static )?method .* on an unknown class#'
-        - '#Instantiated class .* not found#'
-        - '#Property .* has unknown class#'
-        - '#Parameter .* has invalid type#'
-        - '#Method .* has invalid (return type|class)#'
-        - '#Access to property .* on an unknown class#'
-        - '#PHPDoc tag @var for variable .* contains unknown class#'
-        - '#Access to constant .* on an unknown class#'
-        - '#Call to an undefined method object::#'
+        -
+            identifier: class.notFound
+            message: '#Phlix\\Auth\\WatchHistory#'
+        -
+            identifier: class.notFound
+            message: '#Phlix\\Media\\Library\\MediaItem#'
+        -
+            identifier: class.notFound
+            message: '#Phlix\\Media\\Library\\ItemRepository#'
+        -
+            identifier: class.notFound
+            message: '#Phlix\\Admin\\SettingsRepository#'
+        -
+            identifier: class.notFound
+            message: '#Phlix\\Common\\Uuid#'
+        -
+            identifier: class.notFound
+            message: '#Workerman\\MySQL\\Connection#'
+        -
+            identifier: class.notFound
+            message: '#Workerman\\Timer#'
+        -
+            identifier: class.notFound
+            message: '#Workerman\\Http\\Client#'

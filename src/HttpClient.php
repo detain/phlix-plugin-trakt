@@ -266,7 +266,23 @@ class HttpClient implements HttpClientInterface
             throw new TraktApiException('HTTP request timed out after ' . $this->timeout . 's');
         }
 
-        /** @var object $response */
+        // PG-138 (review trakt__srphp m15): the `@var object` assertion was
+        // the live site behind the phpstan object:: wildcard silencer — the
+        // response contract was verified nowhere and every method on it was
+        // silently legal. Narrow by structure and fail loud when the
+        // transport hands back anything that cannot answer the two calls
+        // this method depends on. getHeaders stays duck-typed on purpose:
+        // it is optional to the parser (empty map is a valid answer).
+        if (
+            !is_object($response)
+            || !method_exists($response, 'getStatusCode')
+            || !method_exists($response, 'getBody')
+        ) {
+            throw new TraktApiException(
+                'HTTP transport returned an unexpected response payload: ' . get_debug_type($response)
+            );
+        }
+
         $httpCode = (int) $response->getStatusCode();
         $raw = (string) $response->getBody();
 

@@ -71,13 +71,25 @@ final class DbTraktOAuthStateStore implements TraktOAuthStateStore
      * @param string $state       Unique state identifier
      * @param string $codeVerifier PKCE code verifier
      *
-     * @throws \RuntimeException If database insert fails
+     * @throws \RuntimeException If the payload cannot be encoded (PG-137) or
+     *                           the database insert fails
      */
     public function put(string $state, string $codeVerifier): void
     {
         $id = Uuid::v4();
         $expiresAt = time() + $this->ttlSeconds;
         $data = json_encode(['code_verifier' => $codeVerifier]);
+
+        // PG-137 (review trakt__srphp m14): the encode used to be unchecked.
+        // An unencodable verifier (invalid UTF-8 — this value rides in from
+        // the OAuth dance) bound as an empty column: the row INSERTed fine,
+        // and consume() answered "never issued" forever — a dead link behind
+        // a green write path. Reject BEFORE touching the table.
+        if ($data === false) {
+            throw new \RuntimeException(
+                'Failed to encode Trakt OAuth state payload: ' . json_last_error_msg()
+            );
+        }
 
         $result = $this->db->query(
             "INSERT INTO oauth_state_store (id, provider, state_value, data, expires_at)
@@ -94,13 +106,19 @@ final class DbTraktOAuthStateStore implements TraktOAuthStateStore
      * One-shot lookup and deletion of the entry for a given state.
      *
      * Returns null if the state was never issued, has already been consumed,
-     * or has expired (TTL exceeded).
+     * or has expired (TTL exceeded) — the CSRF-law verdict, delivered only
+     * when the store ANSWERED. Availability faults throw instead (PG-137):
+     * a failed statement or connection may not read back to the caller as
+     * a replay rejection.
      *
      * Cleans up expired entries in batches to prevent table bloat.
      *
      * @param string $state State value to consume
      *
      * @return string|null The code verifier if found and consumed, null otherwise
+     *
+     * @throws OAuthStateStoreUnavailableException When the store could not
+     *     be consulted at all (PG-137)
      */
     public function consume(string $state): ?string
     {
@@ -121,9 +139,22 @@ final class DbTraktOAuthStateStore implements TraktOAuthStateStore
     /**
      * Fetch the entry and delete it atomically within a transaction.
      *
+     * PG-137 (review trakt__srphp m14) split the three outcomes the parent
+     * blended into one `null`: a genuine miss (answerable CSRF-null), a
+     * FAILED statement (`query()` false — the upstream contract), and a
+     * THROWN connection fault (previously swallowed by a catch that also
+     * rolled back unguarded). The latter two are availability faults and
+     * surface as {@see OAuthStateStoreUnavailableException}; only a store
+     * that ANSWERED may deliver the security verdict.
+     *
      * @param string $state State value to look up
      *
-     * @return string|null The code verifier if found, null otherwise
+     * @return string|null The code verifier when consumed, null for a
+     *                     genuine miss or an unusable payload
+     *
+     * @throws OAuthStateStoreUnavailableException On any infrastructure
+     *                                             failure (statement false,
+     *                                             connection throw)
      */
     private function fetchAndDelete(string $state): ?string
     {
@@ -135,8 +166,16 @@ final class DbTraktOAuthStateStore implements TraktOAuthStateStore
                 [self::PROVIDER, $state]
             );
 
-            if (!is_array($result) || !isset($result[0]) || !is_array($result[0])) {
-                $this->db->rollBackTrans();
+            if ($result === false) {
+                // PG-137: `false` is the statement FAILING, not the table
+                // answering "no rows" (that is an empty array). A failed
+                // lookup may not borrow the CSRF verdict's null.
+                throw new \RuntimeException('SELECT FOR UPDATE of the OAuth state failed');
+            }
+
+            if (!isset($result[0]) || !is_array($result[0])) {
+                // Genuine miss — the CSRF-law null, unchanged by PG-137.
+                $this->safeRollback();
                 return null;
             }
 
@@ -149,12 +188,17 @@ final class DbTraktOAuthStateStore implements TraktOAuthStateStore
             );
 
             if ($deleteResult === false) {
-                $this->db->rollBackTrans();
-                return null;
+                // PG-137: the row exists but its one-shot DELETE failed —
+                // whether the state survives is UNKNOWN, which no security
+                // verdict can honestly cover.
+                throw new \RuntimeException('one-shot DELETE of the OAuth state failed');
             }
 
             $this->db->commitTrans();
 
+            // Post-commit payload verdicts: the state WAS consumed here, so
+            // an unusable payload is a settled decline (null), not an
+            // availability fault. Untouched by PG-137.
             $data = is_string($row['data'] ?? null) ? json_decode($row['data'], true) : null;
             if (!is_array($data)) {
                 return null;
@@ -167,9 +211,40 @@ final class DbTraktOAuthStateStore implements TraktOAuthStateStore
             }
 
             return $codeVerifier;
-        } catch (\Throwable) {
+        } catch (\Throwable $e) {
+            // PG-137: every fault that reaches here (failed statements,
+            // throwing connections, beginTrans) is an availability fault.
+            // It gets a loud, typed face — never the security null — and
+            // the rollback is guarded so a dead connection's rollback
+            // exception can neither escape nor mask the report (the parent
+            // rolled back UNGUARDED inside this catch).
+            $this->safeRollback();
+            $this->logger->error(
+                'Trakt OAuth state store unavailable during consume; the state could not be adjudicated',
+                ['error' => $e->getMessage()],
+            );
+
+            throw new OAuthStateStoreUnavailableException(
+                'Trakt OAuth state store unavailable during consume: ' . $e->getMessage(),
+                previous: $e,
+            );
+        }
+    }
+
+    /**
+     * Roll the consume transaction back without letting a failed rollback
+     * escape the handler (PG-137 — on a dead connection rollBackTrans()
+     * itself throws; that exception used to leak out of the catch block
+     * and out of consume()).
+     */
+    private function safeRollback(): void
+    {
+        try {
             $this->db->rollBackTrans();
-            return null;
+        } catch (\Throwable $e) {
+            $this->logger->warning('Trakt OAuth state store rollback failed; the consume transaction may dangle', [
+                'error' => $e->getMessage(),
+            ]);
         }
     }
 

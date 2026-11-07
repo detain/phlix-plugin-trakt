@@ -21,6 +21,13 @@ use Psr\Log\NullLogger;
  * - Phlix→Trakt: Pushes local WatchHistory entries (≥ 90%) to Trakt
  *   after PlaybackStopped events where completion threshold was met.
  *
+ * Seam status (PG-141): the ratings surface on this class
+ * ({@see self::syncRatingsTraktToPhlix()} and
+ * {@see self::syncRatingsPhlixToTrakt()}) is implemented but
+ * DELIBERATELY UNWIRED — it has zero production callers. The watch
+ * history pair above is the only wired two-way flow; the ratings
+ * entries await a future wiring wave that gives them a trigger.
+ *
  * @package Phlix\Plugins\Scrobbler\Trakt
  * @since 1.1.0
  */
@@ -134,9 +141,9 @@ class TraktHistorySync
         return $this->fetchAllPages(
             fn (int $page): array => $this->api->getWatchedHistory(
                 $this->settings->username,
+                $this->settings->accessToken ?? '',
                 $page,
-                self::HISTORY_PAGE_SIZE,
-                $this->settings->accessToken ?? ''
+                self::HISTORY_PAGE_SIZE
             ),
             'history'
         );
@@ -239,10 +246,20 @@ class TraktHistorySync
 
             $existing = $this->watchHistory->getForMediaItem($profileId, $mediaItemId);
 
-            if ($existing !== null && $existing['progress_percent'] >= WatchHistory::COMPLETED_THRESHOLD) {
+            // PG-136: typed read boundary. The parent compared the raw mixed
+            // value — under PHP 8's both-to-string rule a corrupt non-numeric
+            // progress like 'n/a' compares GREATER than 90.0, so a broken row
+            // silently protected itself from repair while the pull discarded
+            // real Trakt history. A non-numeric value now parses to null —
+            // "not known complete" — and the pull overwrites (repairs) it.
+            $existingProgress = $existing === null
+                ? null
+                : $this->parseProgressPercent($existing['progress_percent'] ?? null);
+
+            if ($existingProgress !== null && $existingProgress >= WatchHistory::COMPLETED_THRESHOLD) {
                 $this->logger->debug('TraktHistorySync: item already at 90%+, skipping', [
                     'media_item_id' => $mediaItemId,
-                    'progress' => $existing['progress_percent'],
+                    'progress' => $existingProgress,
                 ]);
                 continue;
             }
@@ -313,7 +330,6 @@ class TraktHistorySync
      *
      * @param string $mediaItemId Media item that reached 90%+ completion
      * @param string $lastWatchedAt When the item was last watched
-     * @param int $positionTicks Final playback position
      * @param int|null $durationTicks Total duration
      *
      * @return bool True when successfully pushed to Trakt
@@ -326,7 +342,6 @@ class TraktHistorySync
     public function syncPhlixToTrakt(
         string $mediaItemId,
         string $lastWatchedAt,
-        int $positionTicks,
         ?int $durationTicks
     ): bool {
         if (!$this->settings->isConfigured()) {
@@ -340,10 +355,16 @@ class TraktHistorySync
         }
 
         $existing = $this->watchHistory->getForMediaItem(TraktPlugin::DEFAULT_PROFILE_ID, $mediaItemId);
-        if ($existing === null || $existing['progress_percent'] < WatchHistory::COMPLETED_THRESHOLD) {
+        // PG-136: same typed read boundary as the pull arm (see there).
+        // Non-numeric progress parses to null and the CONSERVATIVE arm
+        // applies: an unknown row is not credited complete, no push.
+        $existingProgress = $existing === null
+            ? null
+            : $this->parseProgressPercent($existing['progress_percent'] ?? null);
+        if ($existingProgress === null || $existingProgress < WatchHistory::COMPLETED_THRESHOLD) {
             $this->logger->debug('TraktHistorySync: item below 90%, skipping Phlix→Trakt', [
                 'media_item_id' => $mediaItemId,
-                'progress' => $existing['progress_percent'] ?? 0,
+                'progress' => $existingProgress ?? 0,
             ]);
             return false;
         }
@@ -472,6 +493,34 @@ class TraktHistorySync
             if ($mediaItemId !== null) {
                 return $mediaItemId;
             }
+        }
+
+        return null;
+    }
+
+    /**
+     * Parse the host row's progress percentage at the read boundary (PG-136).
+     *
+     * One narrow typed reader for `progress_percent`, the template every
+     * other host-row read in this class already follows (see
+     * {@see self::parseIdColumnFromQueryResult()} below and the is_numeric
+     * law in TraktPlugin's push gate). Numeric payloads — including the
+     * numeric strings PDO's emulated prepares deliver — become floats;
+     * anything else (corrupt strings, arrays, nulls) is NOT-KNOWN and comes
+     * back null. Callers decide what unknown means: the pull overwrites the
+     * row (repair), the push declines to credit it (conservative). The
+     * parent compared the raw mixed value directly against the float
+     * threshold, letting PHP 8's string-cast ordering silently invert both
+     * guards ('n/a' >= 90.0 is TRUE; 'n/a' < 90.0 is FALSE).
+     *
+     * @param mixed $value Raw `progress_percent` from the host row
+     *
+     * @return float|null Percentage as a float, null when not numeric
+     */
+    private function parseProgressPercent(mixed $value): ?float
+    {
+        if (is_numeric($value)) {
+            return (float) $value;
         }
 
         return null;
@@ -780,6 +829,10 @@ class TraktHistorySync
      * failure RETHROWS to the caller's recovery rather than degrading to a
      * zero-count that reads as "user has no ratings".
      *
+     * UNWIRED seam status (PG-141): no production caller triggers this
+     * pull yet — it is exercised only by its tests until a wiring wave
+     * gives the ratings surfaces a trigger (see class docblock).
+     *
      * @param string $profileId Profile ID to sync ratings for
      *
      * @return int Number of ratings persisted (entries whose profile owner
@@ -1022,6 +1075,10 @@ class TraktHistorySync
      * transient API failures degrade to a logged false.
      *
      * @param string $mediaItemId Media item that was rated
+     * UNWIRED seam status (PG-141): no production caller triggers this
+     * push yet — it is exercised only by its tests until a wiring wave
+     * gives the ratings surfaces a trigger (see class docblock).
+     *
      * @param int $rating Rating value (1-10)
      *
      * @return bool True when successfully pushed to Trakt

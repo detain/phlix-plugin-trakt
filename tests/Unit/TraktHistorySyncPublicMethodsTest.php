@@ -169,6 +169,97 @@ final class TraktHistorySyncPublicMethodsTest extends TestCase
         $this->assertSame(0, $result);
     }
 
+    /**
+     * PG-136 (review trakt__srphp m13): the guard compared the host row's
+     * `progress_percent` RAW. Under PHP 8's both-to-string rule a corrupt
+     * non-numeric value like 'n/a' compares GREATER than 90.0, so the row
+     * silently protected itself from repair and real Trakt history was
+     * discarded. With the typed read boundary a non-numeric value parses
+     * to null — "not known complete" — and the pull overwrites it.
+     */
+    public function testSyncTraktToPhlixRepairsCorruptProgressRowInsteadOfStringComparingIt(): void
+    {
+        $traktHistory = [
+            [
+                'movie' => [
+                    'ids' => ['tmdb' => 123],
+                ],
+                'watched_at' => '2024-01-15T10:30:00Z',
+                'runtime' => 120,
+            ],
+        ];
+
+        $api = $this->createMock(TraktApi::class);
+        $api->method('getWatchedHistory')->willReturn($traktHistory);
+
+        $db = new TestableConnection();
+        $db->setResults([[['id' => 'local-id-123']]]);
+
+        $watchHistory = $this->getMockBuilder(WatchHistory::class)
+            ->onlyMethods(['getForMediaItem', 'updateProgress'])
+            ->getMock();
+
+        $watchHistory->method('getForMediaItem')
+            ->willReturn(['progress_percent' => 'n/a', 'duration_ticks' => 0]);
+
+        // The corrupt row must be repaired, not string-compared into immunity.
+        $watchHistory->expects($this->once())->method('updateProgress');
+
+        $sync = $this->createSync($api, $watchHistory, null, $db);
+
+        $this->assertSame(1, $sync->syncTraktToPhlix('default'));
+    }
+
+    /**
+     * PG-136: the push arm had the same unguarded read — 'n/a' < 90.0 is
+     * FALSE lexicographically, so a corrupt row was CREDITED as complete
+     * and pushed. The typed boundary parses it to null ("unknown"), and
+     * the conservative arm declines the push.
+     */
+    public function testSyncPhlixToTraktSkipsPushWhenLocalProgressIsNotNumeric(): void
+    {
+        $api = $this->createMock(TraktApi::class);
+        $api->expects($this->never())->method('addToHistory');
+
+        $watchHistory = $this->createMock(WatchHistory::class);
+        $watchHistory->method('getForMediaItem')->willReturn([
+            'media_name' => 'Corrupt Row Movie',
+            'media_type' => 'movie',
+            'metadata' => [],
+            'progress_percent' => 'n/a',
+        ]);
+
+        $sync = $this->createSync($api, $watchHistory);
+
+        $this->assertFalse($sync->syncPhlixToTrakt('media-id', 'now', null));
+    }
+
+    /**
+     * PG-136 law pin (green on both sides): numeric-string progress — the
+     * shape PDO's emulated prepares actually deliver — keeps its numeric
+     * comparison semantics. The boundary parser must not regress '95'
+     * into a non-complete row.
+     */
+    public function testSyncPhlixToTraktTreatsNumericStringProgressAsComplete(): void
+    {
+        $api = $this->createMock(TraktApi::class);
+        $api->expects($this->once())
+            ->method('addToHistory')
+            ->willReturn(['added' => ['movies' => 1]]);
+
+        $watchHistory = $this->createMock(WatchHistory::class);
+        $watchHistory->method('getForMediaItem')->willReturn([
+            'media_name' => 'String Percent Movie',
+            'media_type' => 'movie',
+            'metadata' => [],
+            'progress_percent' => '95',
+        ]);
+
+        $sync = $this->createSync($api, $watchHistory);
+
+        $this->assertTrue($sync->syncPhlixToTrakt('media-id', '2024-01-15T10:30:00Z', null));
+    }
+
     public function testSyncTraktToPhlixSkipsItemsNotFoundLocally(): void
     {
         $traktHistory = [
@@ -245,7 +336,7 @@ final class TraktHistorySyncPublicMethodsTest extends TestCase
 
         $sync = $this->createSync(settings: $settings);
 
-        $result = $sync->syncPhlixToTrakt('media-id', 'now', 0, null);
+        $result = $sync->syncPhlixToTrakt('media-id', 'now', null);
 
         $this->assertFalse($result);
     }
@@ -261,7 +352,7 @@ final class TraktHistorySyncPublicMethodsTest extends TestCase
 
         $sync = $this->createSync(settings: $settings);
 
-        $result = $sync->syncPhlixToTrakt('media-id', 'now', 0, null);
+        $result = $sync->syncPhlixToTrakt('media-id', 'now', null);
 
         $this->assertFalse($result);
     }
@@ -273,7 +364,7 @@ final class TraktHistorySyncPublicMethodsTest extends TestCase
 
         $sync = $this->createSync(watchHistory: $watchHistory);
 
-        $result = $sync->syncPhlixToTrakt('media-id', 'now', 0, null);
+        $result = $sync->syncPhlixToTrakt('media-id', 'now', null);
 
         $this->assertFalse($result);
     }
@@ -286,7 +377,7 @@ final class TraktHistorySyncPublicMethodsTest extends TestCase
 
         $sync = $this->createSync(watchHistory: $watchHistory);
 
-        $result = $sync->syncPhlixToTrakt('media-id', 'now', 0, null);
+        $result = $sync->syncPhlixToTrakt('media-id', 'now', null);
 
         $this->assertFalse($result);
     }
@@ -309,7 +400,7 @@ final class TraktHistorySyncPublicMethodsTest extends TestCase
 
         $sync = $this->createSync($api, $watchHistory);
 
-        $result = $sync->syncPhlixToTrakt('media-id', '2024-01-15T10:30:00Z', 0, null);
+        $result = $sync->syncPhlixToTrakt('media-id', '2024-01-15T10:30:00Z', null);
 
         $this->assertTrue($result);
     }
@@ -331,7 +422,7 @@ final class TraktHistorySyncPublicMethodsTest extends TestCase
 
         $sync = $this->createSync($api, $watchHistory);
 
-        $result = $sync->syncPhlixToTrakt('media-id', 'now', 0, null);
+        $result = $sync->syncPhlixToTrakt('media-id', 'now', null);
 
         $this->assertFalse($result);
     }
@@ -354,7 +445,7 @@ final class TraktHistorySyncPublicMethodsTest extends TestCase
 
         $sync = $this->createSync($api, $watchHistory);
 
-        $result = $sync->syncPhlixToTrakt('my-media-id', '2024-06-15T12:00:00Z', 0, null);
+        $result = $sync->syncPhlixToTrakt('my-media-id', '2024-06-15T12:00:00Z', null);
 
         $this->assertTrue($result);
     }
@@ -381,7 +472,7 @@ final class TraktHistorySyncPublicMethodsTest extends TestCase
 
         $sync = $this->createSync($api, $watchHistory);
 
-        $this->assertFalse($sync->syncPhlixToTrakt('my-media-id', '2024-06-15T12:00:00Z', 0, null));
+        $this->assertFalse($sync->syncPhlixToTrakt('my-media-id', '2024-06-15T12:00:00Z', null));
     }
 
     /**
@@ -533,7 +624,7 @@ final class TraktHistorySyncPublicMethodsTest extends TestCase
         $sync = $this->createSync($api, $watchHistory);
 
         $this->expectException(\Phlix\Plugins\Scrobbler\Trakt\TraktAuthenticationException::class);
-        $sync->syncPhlixToTrakt('media-id', '2024-01-15T10:30:00Z', 0, null);
+        $sync->syncPhlixToTrakt('media-id', '2024-01-15T10:30:00Z', null);
     }
 
     public function testSyncRatingsPhlixToTraktRethrowsAuthenticationFailure(): void
@@ -601,6 +692,6 @@ final class TraktHistorySyncPublicMethodsTest extends TestCase
 
         $sync = $this->createSync($api, $watchHistory);
 
-        $this->assertTrue($sync->syncPhlixToTrakt('media-id', 'not-a-date', 0, null));
+        $this->assertTrue($sync->syncPhlixToTrakt('media-id', 'not-a-date', null));
     }
 }

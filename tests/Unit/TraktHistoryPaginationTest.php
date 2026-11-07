@@ -17,7 +17,7 @@ use Workerman\MySQL\Connection;
  *
  * ## The defect
  *
- * `syncTraktToPhlix()` called `getWatchedHistory($username, 1, 100, $token)` —
+ * `syncTraktToPhlix()` called `getWatchedHistory($username, $token, 1, 100)` —
  * page 1 only. Any user with more than 100 watched items had the remainder
  * silently dropped, and the sync reported success having imported a truncated
  * history. Nothing surfaced it: a partial import looks exactly like a complete
@@ -37,7 +37,7 @@ final class TraktHistoryPaginationTest extends TestCase
 
         $calls = 0;
         $api->method('getWatchedHistory')->willReturnCallback(
-            static function (string $u, int $page, int $limit, string $t) use ($pages, &$calls): array {
+            static function (string $u, string $t, int $page, int $limit) use ($pages, &$calls): array {
                 $calls++;
 
                 return $pages[$page - 1] ?? [];
@@ -82,7 +82,7 @@ final class TraktHistoryPaginationTest extends TestCase
      * CONSEQUENCE: a history spanning three pages must yield all three pages'
      * items, not just the first 100.
      *
-     * Mutation-verified: restoring the single `getWatchedHistory(..., 1, 100, ...)`
+     * Mutation-verified: restoring the single `getWatchedHistory(..., ..., 1, 100)`
      * call drops the count to 100 and fails this test.
      */
     public function test_history_spanning_multiple_pages_is_fetched_completely(): void

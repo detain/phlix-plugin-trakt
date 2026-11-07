@@ -432,10 +432,16 @@ class TraktApi
      * preserve-local guard still keeps the row untouched (no destructive
      * 0/0 write).
      *
+     * The access token is REQUIRED and sits in second position, the same
+     * dialect as {@see self::getRatings()} and the other authenticated
+     * readers (PG-140). The historic optional-trailing-token shape let a
+     * caller silently dial with `''` — an unauthenticated request the API
+     * rejects with 401 long after the call site looked correct.
+     *
      * @param string $username Trakt username
+     * @param string $accessToken OAuth access token
      * @param int $page Page number (1-indexed; the endpoint is paginated — see X-Pagination headers)
      * @param int $limit Items per page (default 100, max 1000)
-     * @param string $accessToken OAuth access token
      *
      * @return array<mixed> Watched history items
      *
@@ -444,9 +450,9 @@ class TraktApi
      */
     public function getWatchedHistory(
         string $username,
+        string $accessToken,
         int $page = 1,
-        int $limit = 100,
-        string $accessToken = ''
+        int $limit = 100
     ): array {
 
         $params = [

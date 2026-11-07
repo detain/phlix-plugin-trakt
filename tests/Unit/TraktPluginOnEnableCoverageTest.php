@@ -133,6 +133,42 @@ final class TraktPluginOnEnableCoverageTest extends TestCase
         $prop->setAccessible(true);
         $this->assertNull($prop->getValue($plugin));
     }
+
+    /**
+     * PG-139 (review trakt__srphp m19): a boot with LINKED tokens but no
+     * settings writer is the exact precondition for credential-stranding,
+     * and until now it announced nothing at all (the persist-time warning
+     * only fires once a rotation has already happened). onEnable must name
+     * it at ERROR level, before any rotation can run.
+     */
+    public function testOnEnableWithLinkedTokensAndNoWriterAnnouncesTheCustodyGap(): void
+    {
+        $settings = new TraktSettings(
+            accessToken: 'test-access',
+            refreshToken: 'test-refresh',
+            username: 'testuser',
+            syncEnabled: true,
+        );
+
+        $logger = $this->createMock(\Psr\Log\LoggerInterface::class);
+        $logger->expects($this->once())->method('error')->with($this->stringContains('settings writer'));
+
+        $plugin = new TraktPlugin($settings, $logger);
+
+        // Deliberately NO TraktSettingsRepository binding in the container.
+        $container = new StubContainerWithAdd([
+            \Phlix\Media\Library\ItemRepository::class => new FakeItemRepositoryForCoverageTest(),
+            \Phlix\Auth\WatchHistory::class => null,
+            \Workerman\MySQL\Connection::class => new FakeDbConnection(),
+        ]);
+
+        $plugin->onEnable($container);
+
+        $reflection = new \ReflectionClass($plugin);
+        $prop = $reflection->getProperty('settingsRepository');
+        $prop->setAccessible(true);
+        $this->assertNull($prop->getValue($plugin), 'precondition: the writer really is absent');
+    }
 }
 
 /**
