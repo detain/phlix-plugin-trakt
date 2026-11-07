@@ -10,7 +10,7 @@
         "ext-curl": "*",
         "ext-mbstring": "*",
         "ext-sodium": "*",
-        "detain/phlix-shared": "^0.52.0",
+        "detain/phlix-shared": "^0.54.0",
         "psr/container": "^1.1 || ^2.0",
         "psr/log": "^1.0 || ^2.0 || ^3.0"
     },
