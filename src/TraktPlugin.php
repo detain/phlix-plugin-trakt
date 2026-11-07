@@ -880,8 +880,10 @@ class TraktPlugin implements LifecycleInterface, ConfigurableInterface
      *
      * Never includes the raw OAuth token strings — only the editable
      * preferences plus a `has_tokens` connection flag and `token_expires_at`
-     * status. Use this (NOT {@see TraktPlugin::getSettings()}) anywhere settings
-     * are serialized for the admin Plugins page.
+     * status. `token_encrypted` mirrors this plugin's actual cipher posture
+     * (PG-143): true only when a TokenCipher was resolved. Use this
+     * (NOT {@see TraktPlugin::getSettings()}) anywhere settings are
+     * serialized for the admin Plugins page.
      *
      * @return array<string, mixed>
      *
@@ -889,7 +891,7 @@ class TraktPlugin implements LifecycleInterface, ConfigurableInterface
      */
     public function getSettingsForSpa(): array
     {
-        return $this->settings->toSpaArray();
+        return $this->settings->toSpaArray($this->tokenCipher !== null);
     }
 
     /**

@@ -6,6 +6,7 @@ namespace Phlix\Tests\Unit\Plugins\Scrobbler\Trakt;
 
 use Phlix\Plugins\Scrobbler\Trakt\HttpClient;
 use Phlix\Plugins\Scrobbler\Trakt\HttpClientInterface;
+use Phlix\Plugins\Scrobbler\Trakt\RemoteText;
 use Phlix\Plugins\Scrobbler\Trakt\TraktApi;
 use Phlix\Plugins\Scrobbler\Trakt\TraktApiException;
 use PHPUnit\Framework\TestCase;
@@ -112,6 +113,38 @@ final class TraktApiTest extends TestCase
 
         $this->expectException(TraktApiException::class);
         $api->refreshAccessToken('old-refresh-token');
+    }
+
+    /**
+     * PG-144: error_description rides in from the OAuth endpoint as remote
+     * text — it must be bounded into the exception message, never copied
+     * whole into logs or admin surfaces.
+     */
+    public function testExchangeCodeBoundsLongErrorDescription(): void
+    {
+        $http = new MockHttpClient([['error' => 'invalid_grant', 'error_description' => str_repeat('d', 5_000)]]);
+        $api = new TraktApi($http, self::CLIENT_ID, self::CLIENT_SECRET, new NullLogger());
+
+        try {
+            $api->exchangeCode('auth-code', 'code-verifier');
+            $this->fail('Expected TraktApiException');
+        } catch (TraktApiException $e) {
+            $this->assertLessThanOrEqual(RemoteText::MAX_MESSAGE_CHARS + 32, strlen($e->getMessage()));
+            $this->assertStringStartsWith('ddd', $e->getMessage());
+        }
+    }
+
+    public function testRefreshTokenBoundsLongErrorText(): void
+    {
+        $http = new MockHttpClient([['error' => str_repeat('r', 5_000)]]);
+        $api = new TraktApi($http, self::CLIENT_ID, self::CLIENT_SECRET, new NullLogger());
+
+        try {
+            $api->refreshAccessToken('old-refresh-token');
+            $this->fail('Expected TraktApiException');
+        } catch (TraktApiException $e) {
+            $this->assertLessThanOrEqual(RemoteText::MAX_MESSAGE_CHARS + 32, strlen($e->getMessage()));
+        }
     }
 
     /**

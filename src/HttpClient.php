@@ -16,6 +16,14 @@ use Phlix\Common\Runtime\WorkerContext;
 class HttpClient implements HttpClientInterface
 {
     /**
+     * PG-144: ceiling on response bytes accepted from the API. Trakt's own
+     * JSON stays far below this for every endpoint the plugin calls; a body
+     * past the cap is a hostile or proxy-swollen answer, not a payload to
+     * parse and echo.
+     */
+    public const MAX_RESPONSE_BYTES = 4 * 1024 * 1024;
+
+    /**
      * Pooled async HTTP clients, keyed by TLS peer host.
      *
      * PG-125: the client used to be constructed per request (paying the pool
@@ -286,6 +294,14 @@ class HttpClient implements HttpClientInterface
         $httpCode = (int) $response->getStatusCode();
         $raw = (string) $response->getBody();
 
+        // PG-144: ceiling-gate before parse. The vendored async client has
+        // already buffered this body by the time we see it — the gate keeps
+        // oversized payloads out of the decoder and the echo path; the cURL
+        // transport enforces the same ceiling streaming (curlBodySink()).
+        if (!self::bodyWithinCeiling(0, strlen($raw))) {
+            throw new TraktApiException(self::oversizedBodyMessage());
+        }
+
         $responseHeaders = [];
         if (method_exists($response, 'getHeaders')) {
             $responseHeaders = (array) $response->getHeaders();
@@ -328,10 +344,20 @@ class HttpClient implements HttpClientInterface
         // response header line, normalised to an associative name => value map.
         $responseHeaders = [];
 
+        // PG-144: the body arrives through a size-gated sink instead of
+        // RETURNTRANSFER buffering — an overflowing answer is aborted at the
+        // chunk that breaches the ceiling. The state is per-call and by-
+        // reference, never an instance property: swoole-hooked curl_exec can
+        // interleave coroutines inside one HttpClient.
+        /** @var array{buffered: int, overflow: bool, body: string} $bodyState */
+        $bodyState = ['buffered' => 0, 'overflow' => false, 'body' => ''];
+
         curl_setopt_array($ch, [
-            CURLOPT_RETURNTRANSFER => true,
             CURLOPT_TIMEOUT => $this->timeout,
             CURLOPT_HTTPHEADER => $requestHeaders,
+            CURLOPT_WRITEFUNCTION => static function (mixed $ch, string $chunk) use (&$bodyState): int {
+                return self::curlBodySink($bodyState, $chunk);
+            },
             CURLOPT_HEADERFUNCTION => static function (mixed $ch, string $line) use (&$responseHeaders): int {
                 $header = self::parseHeaderLine($line);
                 if ($header !== null) {
@@ -360,18 +386,23 @@ class HttpClient implements HttpClientInterface
             curl_setopt($ch, CURLOPT_URL, $url);
         }
 
-        /** @var string|false $raw */
-        $raw = curl_exec($ch);
+        $transferred = curl_exec($ch);
         /** @var int $httpCode */
         $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
         /** @var string $error */
         $error = curl_error($ch);
 
-        if ($raw === false || $error !== '') {
+        if ($bodyState['overflow']) {
+            // Fail loud as a size law — not as the generic write-error the
+            // cURL layer records when the sink aborts the transfer.
+            throw new TraktApiException(self::oversizedBodyMessage());
+        }
+
+        if ($transferred === false || $error !== '') {
             throw new TraktApiException('cURL error: ' . $error);
         }
 
-        return $this->parseResponse((int) $httpCode, $raw, $responseHeaders);
+        return $this->parseResponse((int) $httpCode, $bodyState['body'], $responseHeaders);
     }
 
     /**
@@ -411,8 +442,9 @@ class HttpClient implements HttpClientInterface
                 : (is_string($decoded['message'] ?? null) ? $decoded['message'] : 'Rate limit exceeded');
             // The hint is surfaced for hosts; the plugin itself has no
             // auto-retry consumer — deliberate law, see README "Rate Limits
-            // and Scheduling" (M-TRAKT-13/19).
-            throw new TraktRateLimitException($message, self::extractRetryAfter($headers));
+            // and Scheduling" (M-TRAKT-13/19). PG-144: the remote text is
+            // bounded — a 429 body chooses its own length, not our logs.
+            throw new TraktRateLimitException(RemoteText::bound($message), self::extractRetryAfter($headers));
         }
 
         if ($httpCode >= 300 && $httpCode < 400) {
@@ -430,12 +462,54 @@ class HttpClient implements HttpClientInterface
             $decoded = is_array($decoded) ? $decoded : [];
             $message = is_string($decoded['error'] ?? null) ? $decoded['error']
                 : (is_string($decoded['message'] ?? null) ? $decoded['message'] : 'HTTP ' . $httpCode);
-            throw new TraktApiException($message, $httpCode);
+            // PG-144: bounded remote text — see the 429 arm above.
+            throw new TraktApiException(RemoteText::bound($message), $httpCode);
         }
 
         $decoded = json_decode($raw, true);
 
         return is_array($decoded) ? $decoded : [];
+    }
+
+    /**
+     * PG-144 ceiling predicate: does $incoming bytes, stacked on top of
+     * $buffered ones, still fit inside {@see MAX_RESPONSE_BYTES}?
+     */
+    private static function bodyWithinCeiling(int $buffered, int $incoming): bool
+    {
+        return $buffered + $incoming <= self::MAX_RESPONSE_BYTES;
+    }
+
+    /**
+     * cURL write-callback sink (PG-144): accept chunks into $state['body']
+     * until the ceiling would be breached; then flag the overflow and
+     * return 0, which aborts the transfer.
+     *
+     * @param array{buffered: int, overflow: bool, body: string} $state
+     *        Per-call accumulation, by reference.
+     *
+     * @return int Bytes accepted from $chunk (strlen($chunk) or 0 = abort)
+     */
+    private static function curlBodySink(array &$state, string $chunk): int
+    {
+        if (!self::bodyWithinCeiling($state['buffered'], strlen($chunk))) {
+            $state['overflow'] = true;
+
+            return 0;
+        }
+
+        $state['body'] .= $chunk;
+        $state['buffered'] += strlen($chunk);
+
+        return strlen($chunk);
+    }
+
+    /**
+     * The one refusal message for both transports' ceiling gates (PG-144).
+     */
+    private static function oversizedBodyMessage(): string
+    {
+        return 'Refusing Trakt response body over ' . self::MAX_RESPONSE_BYTES . ' bytes';
     }
 
     /**

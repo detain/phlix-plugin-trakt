@@ -297,6 +297,26 @@ final class TraktSettingsTest extends TestCase
     }
 
     /**
+     * PG-143: the SPA projection advertises whether tokens are held
+     * encrypted at rest. Default is the conservative false — the settings
+     * object alone cannot know the deployment's cipher posture.
+     */
+    public function testSpaArrayAdvertisesUnencryptedTokenPostureByDefault(): void
+    {
+        $spa = (new TraktSettings(accessToken: 'a', refreshToken: 'b'))->toSpaArray();
+
+        $this->assertArrayHasKey('token_encrypted', $spa);
+        $this->assertFalse($spa['token_encrypted']);
+    }
+
+    public function testSpaArrayAdvertisesEncryptedTokenPostureWhenTold(): void
+    {
+        $spa = (new TraktSettings())->toSpaArray(true);
+
+        $this->assertTrue($spa['token_encrypted']);
+    }
+
+    /**
      * has_tokens is false in the SPA projection when not connected.
      */
     public function testSpaArrayHasTokensFalseWhenNotConnected(): void

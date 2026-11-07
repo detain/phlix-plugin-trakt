@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Phlix\Tests\Unit\Plugins\Scrobbler\Trakt;
 
 use Phlix\Plugins\Scrobbler\Trakt\HttpClient;
+use Phlix\Plugins\Scrobbler\Trakt\RemoteText;
 use Phlix\Plugins\Scrobbler\Trakt\TraktApiException;
 use Phlix\Plugins\Scrobbler\Trakt\TraktAuthenticationException;
 use Phlix\Plugins\Scrobbler\Trakt\TraktRateLimitException;
@@ -418,5 +419,90 @@ final class HttpClientTest extends TestCase
             ['test_field' => 'test_value'],
             ['X-Custom-Header' => 'custom-value']
         );
+    }
+
+    // --- PG-144: remote text bounded, response body capped ------------------
+
+    public function testLongRemoteErrorTextIsBoundedIntoApiError(): void
+    {
+        $longError = str_repeat('x', 5_000);
+
+        try {
+            $this->parseResponse(400, json_encode(['error' => $longError]));
+            $this->fail('Expected TraktApiException');
+        } catch (TraktApiException $e) {
+            $this->assertLessThanOrEqual(RemoteText::MAX_MESSAGE_CHARS + 32, strlen($e->getMessage()));
+            $this->assertStringStartsWith('xxx', $e->getMessage());
+            $this->assertStringNotContainsString($longError, $e->getMessage());
+        }
+    }
+
+    public function testLongRemoteRateLimitTextIsBounded(): void
+    {
+        try {
+            $this->parseResponse(429, json_encode(['error' => str_repeat('y', 5_000)]));
+            $this->fail('Expected TraktRateLimitException');
+        } catch (TraktRateLimitException $e) {
+            $this->assertLessThanOrEqual(RemoteText::MAX_MESSAGE_CHARS + 32, strlen($e->getMessage()));
+        }
+    }
+
+    public function testMultiByteRemoteTextIsBoundedWithoutBreakingCodepoints(): void
+    {
+        try {
+            $this->parseResponse(400, json_encode(['error' => str_repeat('é', 5_000)]));
+            $this->fail('Expected TraktApiException');
+        } catch (TraktApiException $e) {
+            $this->assertTrue(
+                mb_check_encoding($e->getMessage(), 'UTF-8'),
+                'bounded text must not end in a broken codepoint',
+            );
+            $this->assertLessThanOrEqual(RemoteText::MAX_MESSAGE_CHARS + 32, mb_strlen($e->getMessage(), 'UTF-8'));
+        }
+    }
+
+    public function testRemoteTextAtTheExactCapPassesThroughVerbatim(): void
+    {
+        $text = str_repeat('z', RemoteText::MAX_MESSAGE_CHARS);
+
+        try {
+            $this->parseResponse(400, json_encode(['error' => $text]));
+            $this->fail('Expected TraktApiException');
+        } catch (TraktApiException $e) {
+            $this->assertSame($text, $e->getMessage());
+        }
+    }
+
+    public function testBodyWithinCeilingPredicateHoldsAtTheBoundary(): void
+    {
+        $predicate = new \ReflectionMethod(HttpClient::class, 'bodyWithinCeiling');
+        $predicate->setAccessible(true);
+
+        $cap = HttpClient::MAX_RESPONSE_BYTES;
+        $this->assertTrue($predicate->invoke(null, 0, $cap), 'a body of exactly the ceiling is within it');
+        $this->assertTrue($predicate->invoke(null, $cap - 1, 1));
+        $this->assertFalse($predicate->invoke(null, $cap - 1, 2), 'one byte past the ceiling must fail the predicate');
+    }
+
+    public function testBodySinkAbortsTransferWhenCeilingIsBreached(): void
+    {
+        $sink = new \ReflectionMethod(HttpClient::class, 'curlBodySink');
+        $sink->setAccessible(true);
+
+        /** @var array{buffered: int, overflow: bool, body: string} $state */
+        $state = ['buffered' => 0, 'overflow' => false, 'body' => ''];
+        $chunk = str_repeat('a', 1024);
+
+        $accepted = $sink->invokeArgs(null, [&$state, $chunk]);
+        $this->assertSame(1024, $accepted, 'a chunk under the ceiling must be accepted whole');
+        $this->assertFalse($state['overflow']);
+        $this->assertSame(1024, $state['buffered']);
+        $this->assertSame($chunk, $state['body']);
+
+        $breach = $sink->invokeArgs(null, [&$state, str_repeat('a', HttpClient::MAX_RESPONSE_BYTES)]);
+        $this->assertSame(0, $breach, 'the sink must return 0 (abort) once the ceiling would be breached');
+        $this->assertTrue($state['overflow']);
+        $this->assertSame(1024, $state['buffered'], 'an overflowing chunk must never be counted');
+        $this->assertSame($chunk, $state['body'], 'an overflowing chunk must never be buffered');
     }
 }

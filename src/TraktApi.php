@@ -145,7 +145,8 @@ class TraktApi
             $message = is_string($response['error_description'] ?? null)
                 ? $response['error_description']
                 : (is_string($response['error'] ?? null) ? $response['error'] : 'Token exchange failed');
-            throw new TraktApiException($message);
+            // PG-144: error_description is remote text — bound, never echoed whole.
+            throw new TraktApiException(RemoteText::bound($message));
         }
 
         // M-TRAKT-16 (srphp m8): a 2xx without the token fields is a FAILURE,
@@ -193,7 +194,8 @@ class TraktApi
             $message = is_string($response['error_description'] ?? null)
                 ? $response['error_description']
                 : (is_string($response['error'] ?? null) ? $response['error'] : 'Token refresh failed');
-            throw new TraktApiException($message);
+            // PG-144: same boundary law as exchangeCode().
+            throw new TraktApiException(RemoteText::bound($message));
         }
 
         // M-TRAKT-16 (srphp m8): same boundary law as exchangeCode() — a 2xx

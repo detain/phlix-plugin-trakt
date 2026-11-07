@@ -153,11 +153,16 @@ final class TraktSettings
      * boolean signals whether the account is connected. Only the
      * user-facing/editable preferences and non-secret status fields are exposed.
      *
+     * `token_encrypted` (PG-143) advertises whether the stored tokens sit
+     * encrypted at rest. The settings object cannot know the deployment's
+     * cipher posture on its own, so the default is the conservative false
+     * and {@see TraktPlugin::getSettingsForSpa()} passes the truth.
+     *
      * @return array<string, mixed>
      *
      * @since 1.1.0
      */
-    public function toSpaArray(): array
+    public function toSpaArray(bool $tokensEncrypted = false): array
     {
         return [
             'username' => $this->username,
@@ -167,6 +172,7 @@ final class TraktSettings
             // Status only — never the raw tokens.
             'has_tokens' => $this->hasTokens(),
             'token_expires_at' => $this->expiresAt,
+            'token_encrypted' => $tokensEncrypted,
         ];
     }
 

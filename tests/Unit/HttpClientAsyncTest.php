@@ -163,6 +163,25 @@ final class HttpClientAsyncTest extends TestCase
         $this->assertSame('login.trakt.tv', $ssl['peer_name'], 'peer_name must follow the request host');
     }
 
+    /**
+     * PG-144: a response body past the ceiling is refused LOUDLY before it
+     * reaches the parser — a hostile or proxy-swollen answer must not be
+     * handed to json_decode and echoed onward.
+     */
+    public function testOversizedAsyncBodyIsRefusedLoudly(): void
+    {
+        Client::$responses['https://api.trakt.tv/users/me'] = [
+            'status' => 200,
+            'headers' => [],
+            'body' => str_repeat('a', HttpClient::MAX_RESPONSE_BYTES + 1),
+        ];
+
+        $this->expectException(TraktApiException::class);
+        $this->expectExceptionMessageMatches('/Refusing Trakt response body over \d+ bytes/');
+
+        (new HttpClient(timeout: 1))->get('https://api.trakt.tv/users/me');
+    }
+
     // --- deterministic: async branch, no network, no swoole required ---------
 
     public function testRequestTakesAsyncBranchWhenEventLoopIsRunning(): void

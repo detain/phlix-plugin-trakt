@@ -1249,6 +1249,24 @@ final class TraktPluginTest extends TestCase
         $this->assertSame('carol', $spa['username']);
     }
 
+    /**
+     * PG-143: the flag follows the plugin's actual cipher posture — an
+     * enabled plugin holding a TokenCipher reports true, one without a
+     * usable key reports false rather than leaving the portal guessing.
+     */
+    public function testGetSettingsForSpaAdvertisesCipherPosture(): void
+    {
+        $unciphered = new TraktPlugin(new TraktSettings(), new NullLogger());
+        $this->assertFalse($unciphered->getSettingsForSpa()['token_encrypted']);
+
+        $ciphered = new TraktPlugin(
+            settings: new TraktSettings(),
+            logger: new NullLogger(),
+            tokenCipher: new SodiumTokenCipher(str_repeat("\x0f", SODIUM_CRYPTO_SECRETBOX_KEYBYTES)),
+        );
+        $this->assertTrue($ciphered->getSettingsForSpa()['token_encrypted']);
+    }
+
     // --- A3: scrobble progress is a percentage (0-100), not raw seconds -----
 
     /**

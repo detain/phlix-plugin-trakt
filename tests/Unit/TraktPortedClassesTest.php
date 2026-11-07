@@ -62,12 +62,15 @@ final class TraktPortedClassesTest extends TestCase
         $this->assertCount(1, $calls);
         $this->assertStringContainsString('INSERT INTO oauth_state_store', $calls[0]['sql']);
 
-        // params order: [id, provider, state_value, data, expires_at]
+        // params order: [id, provider, state_value, user_id, data, expires_at]
+        // PG-142: the identity column is part of the contract; a 2-arg put
+        // binds NO identity — null, never an empty-string one.
         $params = $calls[0]['params'];
         $this->assertSame('trakt', $params[1]);
         $this->assertSame('state-123', $params[2]);
+        $this->assertNull($params[3]);
 
-        $data = json_decode((string) $params[3], true);
+        $data = json_decode((string) $params[4], true);
         $this->assertIsArray($data);
         $this->assertSame('verifier-abc', $data['code_verifier']);
     }
@@ -118,7 +121,7 @@ final class TraktPortedClassesTest extends TestCase
 
         // Verify the expires_at parameter is ~5 minutes in the future
         $params = $calls[0]['params'];
-        $expiresAt = $params[4] ?? null;
+        $expiresAt = $params[5] ?? null;
         $this->assertNotNull($expiresAt);
         // expires_at should be time() + 300 (with small tolerance)
         $this->assertGreaterThanOrEqual(time() + 299, $expiresAt);
@@ -135,7 +138,7 @@ final class TraktPortedClassesTest extends TestCase
 
         $calls = $db->getCalls();
         $params = $calls[0]['params'];
-        $expiresAt = $params[4] ?? null;
+        $expiresAt = $params[5] ?? null;
         $this->assertNotNull($expiresAt);
         // Default TTL is 600 seconds, so expires_at should be time() + 600
         $this->assertGreaterThanOrEqual(time() + 599, $expiresAt);
@@ -183,8 +186,92 @@ final class TraktPortedClassesTest extends TestCase
         $this->assertNull($store->consume('state-never-issued'));
 
         $calls = $db->getCalls();
-        $this->assertStringContainsString('SELECT data FROM oauth_state_store', $calls[0]['sql']);
+        $this->assertStringContainsString('SELECT data, user_id FROM oauth_state_store', $calls[0]['sql']);
         $this->assertStringContainsString('FOR UPDATE', $calls[0]['sql']);
+    }
+
+    /**
+     * PG-142: put() may bind the initiating user's identity into the row so
+     * the OAuth callback can refuse a state issued to somebody else.
+     */
+    public function testDbStorePutBindsCallerIdentityIntoRow(): void
+    {
+        $db = new TestableConnection();
+        $store = new DbTraktOAuthStateStore($db);
+
+        $store->put('state-123', 'verifier-abc', 'user-42');
+
+        $calls = $db->getCalls();
+        $this->assertCount(1, $calls);
+        $this->assertStringContainsString('user_id', $calls[0]['sql']);
+        // params order: [id, provider, state_value, user_id, data, expires_at]
+        $this->assertSame('user-42', $calls[0]['params'][3]);
+    }
+
+    public function testDbStorePutParsesEmptyIdentityToNull(): void
+    {
+        // Parse-at-boundary: '' arrives from form-shaped callers and must
+        // land as "unbound" (SQL NULL), never as an empty-string identity.
+        $db = new TestableConnection();
+        $store = new DbTraktOAuthStateStore($db);
+
+        $store->put('state-123', 'verifier-abc', '');
+
+        $this->assertNull($db->getCalls()[0]['params'][3]);
+    }
+
+    public function testDbStoreConsumeWithIdentityReportsBoundUser(): void
+    {
+        $db = new TestableConnection();
+        $db->setResults([
+            [['data' => json_encode(['code_verifier' => 'verifier-abc']), 'user_id' => 'user-7']],
+            [],
+            [],
+        ]);
+        $store = new DbTraktOAuthStateStore($db);
+
+        $entry = $store->consumeWithIdentity('state-123');
+
+        $this->assertIsArray($entry);
+        $this->assertSame('verifier-abc', $entry['code_verifier']);
+        $this->assertSame('user-7', $entry['user_id']);
+    }
+
+    public function testDbStoreConsumeWithIdentityReportsNullForUnboundRow(): void
+    {
+        $db = new TestableConnection();
+        $db->setResults([
+            [['data' => json_encode(['code_verifier' => 'verifier-abc']), 'user_id' => null]],
+            [],
+            [],
+        ]);
+        $store = new DbTraktOAuthStateStore($db);
+
+        $entry = $store->consumeWithIdentity('state-123');
+
+        $this->assertIsArray($entry);
+        $this->assertNull($entry['user_id']);
+    }
+
+    public function testDbStoreConsumeWithIdentityIsOneShot(): void
+    {
+        $db = new TestableConnection();
+        $db->setResults([
+            [['data' => json_encode(['code_verifier' => 'verifier-abc']), 'user_id' => 'user-7']],
+            [],
+            [],
+        ]);
+        $store = new DbTraktOAuthStateStore($db);
+
+        $this->assertIsArray($store->consumeWithIdentity('state-123'));
+
+        // The identity-carrying read must consume exactly like consume():
+        // a DELETE for this specific state has to have been issued.
+        $deletedOwnState = array_filter(
+            $db->getCalls(),
+            static fn (array $c): bool => str_contains($c['sql'], 'DELETE FROM oauth_state_store WHERE provider'),
+        );
+        $this->assertNotEmpty($deletedOwnState, 'consumeWithIdentity() must delete the consumed state (one-shot)');
     }
 
     /**

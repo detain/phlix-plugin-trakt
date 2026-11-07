@@ -22,8 +22,10 @@ use Workerman\MySQL\Connection;
  * Stores Trakt OAuth PKCE state entries in a database table instead of $_SESSION,
  * which causes state leakage between Workerman workers/requests.
  *
- * Uses the unified `oauth_state_store` table with provider = 'trakt' and
- * data JSON containing {code_verifier}.
+ * Uses the unified `oauth_state_store` table with provider = 'trakt',
+ * the `user_id` column carrying the identity bound at {@see put()}
+ * (PG-142 — NULL for an unbound, state-keyed deployment), and data JSON
+ * containing {code_verifier}.
  *
  * Each entry has a 10-minute TTL to prevent stale state accumulation.
  * Expired entries are cleaned up on each {@see consume()} call.
@@ -66,19 +68,23 @@ final class DbTraktOAuthStateStore implements TraktOAuthStateStore
     }
 
     /**
-     * Persist a PKCE code verifier keyed by the state value.
+     * Persist a PKCE code verifier keyed by the state value, binding the
+     * initiating user's identity into the row when the flow knows it.
      *
-     * @param string $state       Unique state identifier
-     * @param string $codeVerifier PKCE code verifier
+     * @param string      $state        Unique state identifier
+     * @param string      $codeVerifier PKCE code verifier
+     * @param string|null $userId       Bound identity; '' parses to null
+     *                                  (no binding), never a blank one
      *
      * @throws \RuntimeException If the payload cannot be encoded (PG-137) or
      *                           the database insert fails
      */
-    public function put(string $state, string $codeVerifier): void
+    public function put(string $state, string $codeVerifier, ?string $userId = null): void
     {
         $id = Uuid::v4();
         $expiresAt = time() + $this->ttlSeconds;
         $data = json_encode(['code_verifier' => $codeVerifier]);
+        $boundUserId = ($userId === '') ? null : $userId;
 
         // PG-137 (review trakt__srphp m14): the encode used to be unchecked.
         // An unencodable verifier (invalid UTF-8 — this value rides in from
@@ -92,9 +98,9 @@ final class DbTraktOAuthStateStore implements TraktOAuthStateStore
         }
 
         $result = $this->db->query(
-            "INSERT INTO oauth_state_store (id, provider, state_value, data, expires_at)
-             VALUES (?, ?, ?, ?, FROM_UNIXTIME(?))",
-            [$id, self::PROVIDER, $state, $data, $expiresAt]
+            "INSERT INTO oauth_state_store (id, provider, state_value, user_id, data, expires_at)
+             VALUES (?, ?, ?, ?, ?, FROM_UNIXTIME(?))",
+            [$id, self::PROVIDER, $state, $boundUserId, $data, $expiresAt]
         );
 
         if ($result === false) {
@@ -122,18 +128,31 @@ final class DbTraktOAuthStateStore implements TraktOAuthStateStore
      */
     public function consume(string $state): ?string
     {
+        $entry = $this->consumeWithIdentity($state);
+
+        return $entry === null ? null : $entry['code_verifier'];
+    }
+
+    /**
+     * One-shot lookup returning the full entry — code verifier and the
+     * identity bound at {@see put()} — so the callback can enforce the
+     * binding (PG-142) instead of accepting any valid state from any
+     * caller. Consumption law is identical to {@see consume()}.
+     *
+     * @return array{code_verifier: string, user_id: ?string}|null
+     *
+     * @throws OAuthStateStoreUnavailableException When the store could not
+     *     be consulted at all (PG-137)
+     */
+    public function consumeWithIdentity(string $state): ?array
+    {
         // Atomic consume: row-locked SELECT (FOR UPDATE) within the
         // transaction, then DELETE — a second concurrent callback on the
         // same state blocks on the lock and reads nothing after commit.
-        $verifier = $this->fetchAndDelete($state);
-        if ($verifier === null) {
-            $this->cleanupExpiredEntries();
-            return null;
-        }
-
+        $entry = $this->fetchAndDelete($state);
         $this->cleanupExpiredEntries();
 
-        return $verifier;
+        return $entry;
     }
 
     /**
@@ -149,19 +168,20 @@ final class DbTraktOAuthStateStore implements TraktOAuthStateStore
      *
      * @param string $state State value to look up
      *
-     * @return string|null The code verifier when consumed, null for a
-     *                     genuine miss or an unusable payload
+     * @return array{code_verifier: string, user_id: ?string}|null The entry
+     *                     when consumed, null for a genuine miss or an
+     *                     unusable payload
      *
      * @throws OAuthStateStoreUnavailableException On any infrastructure
      *                                             failure (statement false,
      *                                             connection throw)
      */
-    private function fetchAndDelete(string $state): ?string
+    private function fetchAndDelete(string $state): ?array
     {
         $this->db->beginTrans();
         try {
             $result = $this->db->query(
-                "SELECT data FROM oauth_state_store WHERE provider = ? AND state_value = ?"
+                "SELECT data, user_id FROM oauth_state_store WHERE provider = ? AND state_value = ?"
                 . " AND expires_at > NOW() FOR UPDATE",
                 [self::PROVIDER, $state]
             );
@@ -210,7 +230,11 @@ final class DbTraktOAuthStateStore implements TraktOAuthStateStore
                 return null;
             }
 
-            return $codeVerifier;
+            // The binding rides in the column: NULL is the honest "unbound"
+            // verdict the callback must weigh (PG-142).
+            $userId = is_string($row['user_id'] ?? null) ? $row['user_id'] : null;
+
+            return ['code_verifier' => $codeVerifier, 'user_id' => $userId];
         } catch (\Throwable $e) {
             // PG-137: every fault that reaches here (failed statements,
             // throwing connections, beginTrans) is an availability fault.
