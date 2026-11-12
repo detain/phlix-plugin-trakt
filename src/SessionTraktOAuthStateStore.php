@@ -22,6 +22,12 @@ final class SessionTraktOAuthStateStore implements TraktOAuthStateStore
     private const VERIFIER_KEY = 'trakt_oauth_code_verifier';
     private const USER_ID_KEY = 'trakt_oauth_user_id';
 
+    /**
+     * TRK-15 attestation: the verifier sits in plaintext in the session.
+     * Accepted by design; compensating controls are the session's own
+     * lifetime/TTL, one-shot consume (entry wiped on first read) and the
+     * constant-time hash_equals() state comparison.
+     */
     public function put(string $state, string $codeVerifier, ?string $userId = null): void
     {
         $_SESSION[self::STATE_KEY] = $state;

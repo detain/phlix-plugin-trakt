@@ -71,6 +71,11 @@ final class DbTraktOAuthStateStore implements TraktOAuthStateStore
      * Persist a PKCE code verifier keyed by the state value, binding the
      * initiating user's identity into the row when the flow knows it.
      *
+     * TRK-15 attestation: the verifier is stored as plaintext JSON in
+     * `data`. Accepted by design; compensating controls are the short TTL
+     * (expires_at), single-use consumption under SELECT ... FOR UPDATE, and
+     * the verifier being useless without the matching client credentials.
+     *
      * @param string      $state        Unique state identifier
      * @param string      $codeVerifier PKCE code verifier
      * @param string|null $userId       Bound identity; '' parses to null
