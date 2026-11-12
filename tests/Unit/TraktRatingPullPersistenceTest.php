@@ -267,7 +267,8 @@ final class TraktRatingPullPersistenceTest extends TestCase
             [['id' => self::MEDIA_ITEM_ID]],
         ]);
 
-        $ticks = 120 * WatchHistory::TICKS_PER_SECOND;
+        // Trakt `runtime` is whole minutes (TRK-S9).
+        $ticks = 120 * 60 * WatchHistory::TICKS_PER_SECOND;
 
         $watchHistory = $this->getMockBuilder(WatchHistory::class)
             ->onlyMethods(['getForMediaItem', 'updateProgress'])

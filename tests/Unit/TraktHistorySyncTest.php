@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Phlix\Tests\Unit\Plugins\Scrobbler\Trakt;
 
 use Phlix\Auth\WatchHistory;
+use Phlix\Plugins\Scrobbler\Trakt\DurationSizing;
 use Phlix\Plugins\Scrobbler\Trakt\TraktApi;
 use Phlix\Plugins\Scrobbler\Trakt\TraktApiException;
 use Phlix\Plugins\Scrobbler\Trakt\TraktAuthenticationException;
@@ -584,11 +585,12 @@ final class TraktHistorySyncTest extends TestCase
 
         $result = $method->invoke($sync, ['runtime' => 120]);
 
-        // 120 seconds on the host's arithmetic tick scale — the SAME constant
-        // extractDurationTicks multiplies by (review trakt__srphp M7: the old
-        // 1_200_000_000 literal baked in the 100-ns scale the test stub
-        // fabricated and the host never used).
-        $this->assertSame(120 * WatchHistory::TICKS_PER_SECOND, $result);
+        // Trakt `runtime` is WHOLE MINUTES (TRK-S9): 120 min = 7200 s on the
+        // host's arithmetic tick scale — the SAME constant extractDurationTicks
+        // multiplies by (review trakt__srphp M7: the old 1_200_000_000 literal
+        // baked in the 100-ns scale the test stub fabricated and the host
+        // never used). Reading it as seconds sized a 2-hour film at 2 minutes.
+        $this->assertSame(120 * 60 * WatchHistory::TICKS_PER_SECOND, $result);
     }
 
     public function testExtractDurationTicksFromMovieObject(): void
@@ -604,8 +606,8 @@ final class TraktHistorySyncTest extends TestCase
             'movie' => ['runtime' => 90],
         ]);
 
-        // 90 seconds on the host's arithmetic tick scale (M7 re-pin).
-        $this->assertSame(90 * WatchHistory::TICKS_PER_SECOND, $result);
+        // 90 minutes on the host's arithmetic tick scale (M7 re-pin, TRK-S9).
+        $this->assertSame(90 * 60 * WatchHistory::TICKS_PER_SECOND, $result);
     }
 
     public function testExtractDurationTicksFromEpisodeObject(): void
@@ -621,8 +623,51 @@ final class TraktHistorySyncTest extends TestCase
             'episode' => ['runtime' => 45],
         ]);
 
-        // 45 seconds on the host's arithmetic tick scale (M7 re-pin).
-        $this->assertSame(45 * WatchHistory::TICKS_PER_SECOND, $result);
+        // 45 minutes on the host's arithmetic tick scale (M7 re-pin, TRK-S9).
+        $this->assertSame(45 * 60 * WatchHistory::TICKS_PER_SECOND, $result);
+    }
+
+    /**
+     * TRK-S9: the remote arm and the local {@see DurationSizing} arm read the
+     * SAME unit for `runtime` (whole minutes) — a Trakt runtime and a TMDB
+     * metadata runtime of equal value must size to identical ticks, so a
+     * completed row cannot change length depending on which arm sized it.
+     */
+    public function testExtractDurationTicksAgreesWithLocalDurationSizing(): void
+    {
+        $db = new TraktHistorySyncTestDbDouble();
+        $sync = $this->createSync($db);
+
+        $ref = new \ReflectionClass($sync);
+        $method = $ref->getMethod('extractDurationTicks');
+        $method->setAccessible(true);
+
+        foreach ([1, 22, 45, 90, 137] as $minutes) {
+            $local = (int) round(
+                DurationSizing::secondsFromMetadata(['runtime' => $minutes]) * WatchHistory::TICKS_PER_SECOND
+            );
+            $this->assertSame($local, $method->invoke($sync, ['runtime' => $minutes]), "runtime={$minutes}");
+            $this->assertSame($local, $method->invoke($sync, ['movie' => ['runtime' => $minutes]]));
+            $this->assertSame($local, $method->invoke($sync, ['episode' => ['runtime' => (string) $minutes]]));
+        }
+    }
+
+    /**
+     * TRK-S9: a non-positive remote runtime is "unknown", never a negative
+     * or zero duration — the caller then falls back to local sizing.
+     */
+    public function testExtractDurationTicksTreatsNonPositiveRuntimeAsUnknown(): void
+    {
+        $db = new TraktHistorySyncTestDbDouble();
+        $sync = $this->createSync($db);
+
+        $ref = new \ReflectionClass($sync);
+        $method = $ref->getMethod('extractDurationTicks');
+        $method->setAccessible(true);
+
+        $this->assertSame(0, $method->invoke($sync, ['runtime' => 0]));
+        $this->assertSame(0, $method->invoke($sync, ['runtime' => -5]));
+        $this->assertSame(0, $method->invoke($sync, ['movie' => ['runtime' => '0']]));
     }
 
     public function testExtractDurationTicksReturnsZeroWhenUnknown(): void

@@ -704,6 +704,17 @@ class TraktHistorySync
     /**
      * Extract duration in ticks from a Trakt history item.
      *
+     * Trakt's `runtime` (top-level, or on the embedded movie/episode object)
+     * is expressed in WHOLE MINUTES — the same unit as the TMDB-style
+     * metadata `runtime` that {@see DurationSizing} scales by 60 on the
+     * local arm. Reading it as seconds (TRK-S9) sized a 120-minute film at
+     * two minutes, so both arms now agree to the tick. A non-positive
+     * runtime is "unknown" (0), letting the caller fall back to local truth.
+     *
+     * Honest scope: {@see TraktApi::getWatchedHistory()} does not request
+     * `extended=full`, so a real pull's default payload carries no runtime
+     * and this arm returns 0; it fires only when an entry does supply one.
+     *
      * @param array<string, mixed> $item Trakt history item
      *
      * @return int Duration in ticks (0 if unknown)
@@ -723,9 +734,9 @@ class TraktHistorySync
             }
         }
 
-        if (is_numeric($runtime)) {
-            $seconds = (int)$runtime;
-            return $seconds * WatchHistory::TICKS_PER_SECOND;
+        if (is_numeric($runtime) && (float) $runtime > 0.0) {
+            $seconds = (float) $runtime * 60.0;
+            return (int) round($seconds * WatchHistory::TICKS_PER_SECOND);
         }
         return 0;
     }

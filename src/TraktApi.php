@@ -444,12 +444,15 @@ class TraktApi
      * episode entry resolved to null and the TV half of history sync silently
      * never imported (review trakt__srphp M5).
      *
-     * Note the history wire shape carries no `runtime` on its embedded
-     * movie/episode objects, so the sync sizes completed rows from local
-     * truth instead — the existing row's duration or the media item's
+     * Note this reader does not request `extended=full`, and the DEFAULT
+     * history payload it receives carries no `runtime` on its embedded
+     * movie/episode objects (Trakt only adds `runtime`, in whole minutes,
+     * under `extended=full`). The sync therefore sizes completed rows from
+     * local truth — the existing row's duration or the media item's
      * metadata duration (PG-127); when neither side has one, the
      * preserve-local guard still keeps the row untouched (no destructive
-     * 0/0 write).
+     * 0/0 write). Any `runtime` an entry does carry is read as minutes
+     * (TRK-S9), the same unit the local metadata arm uses.
      *
      * The access token is REQUIRED and sits in second position, the same
      * dialect as {@see self::getRatings()} and the other authenticated
