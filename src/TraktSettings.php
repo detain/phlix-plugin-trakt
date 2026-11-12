@@ -26,6 +26,11 @@ final class TraktSettings
     private const TOKEN_REFRESH_BUFFER_SECONDS = 300;
 
     /**
+     * The token properties are public readonly for in-process use only. An
+     * instance obtained via {@see TraktPlugin::getSettings()} (internal, non-API)
+     * must never be serialized to a client — {@see self::toSpaArray()} is
+     * the only admin-facing projection and it omits the raw tokens.
+     *
      * @param string|null $accessToken OAuth access token (null when not authenticated)
      * @param string|null $refreshToken OAuth refresh token (null when not authenticated)
      * @param int|null $expiresAt Unix timestamp when access token expires (null when not set)

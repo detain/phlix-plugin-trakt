@@ -864,7 +864,22 @@ class TraktPlugin implements LifecycleInterface, ConfigurableInterface
     }
 
     /**
-     * Get the current settings.
+     * Get the current settings — RAW, including the OAuth token strings.
+     *
+     * The returned {@see TraktSettings} carries the live `accessToken` /
+     * `refreshToken` values (ciphertext when a TokenCipher is wired, the
+     * plaintext tokens otherwise). It is an in-process accessor for this
+     * plugin's own collaborators and tests only: it MUST NOT be serialized,
+     * logged, or returned over any HTTP/admin surface. Anything leaving the
+     * process uses {@see TraktPlugin::getSettingsForSpa()} (redacted
+     * projection) instead.
+     *
+     * Visibility stays public only because the host seam has not been proven
+     * free of a public `getSettings()` expectation; treat it as non-API.
+     *
+     * @internal Raw token-bearing settings; never expose outside the plugin.
+     *           Use {@see TraktPlugin::getSettingsForSpa()} for any
+     *           serialized/admin-facing view.
      *
      * @return TraktSettings
      *
