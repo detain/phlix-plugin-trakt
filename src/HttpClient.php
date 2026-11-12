@@ -466,8 +466,29 @@ class HttpClient implements HttpClientInterface
             throw new TraktApiException(RemoteText::bound($message), $httpCode);
         }
 
-        $decoded = json_decode($raw, true);
+        // 2xx. An empty body (204 No Content, or an empty/whitespace 2xx) is
+        // payload-free by design and yields [].
+        if (trim($raw) === '') {
+            return [];
+        }
 
+        // TRK-6: a non-empty 2xx body that does not decode as JSON (truncated
+        // transfer, HTML from a proxy/captive portal, middlebox garbage) is
+        // NOT "success with no data" — mapping it to [] let callers record a
+        // failed call as an empty success. Fail loud with the status code so
+        // every caller's TraktApiException arm records the failure. The body
+        // itself is never echoed (it is remote text of unknown content).
+        try {
+            $decoded = json_decode($raw, true, 512, JSON_THROW_ON_ERROR);
+        } catch (\JsonException $e) {
+            throw new TraktApiException(
+                'Undecodable JSON response body (HTTP ' . $httpCode . '): ' . $e->getMessage(),
+                $httpCode
+            );
+        }
+
+        // Well-formed JSON that is not an object/list (a bare scalar or null)
+        // keeps the historic narrowing to [].
         return is_array($decoded) ? $decoded : [];
     }
 

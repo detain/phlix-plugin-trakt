@@ -343,11 +343,50 @@ final class HttpClientTest extends TestCase
         $this->parseResponse(400, '{"error":"bad"}');
     }
 
-    public function testNonArrayOrUndecodableSuccessBodyYieldsEmptyArray(): void
+    /**
+     * TRK-6 body law: a non-empty 2xx body that is not JSON at all is a
+     * failed call, not "success with no data". The old pin blessed
+     * `200 + garbage => []`, which let a truncated / HTML / middlebox body
+     * read as an empty history page or an empty push result — the sync
+     * loops then recorded success. It now raises TraktApiException carrying
+     * the status code, so every caller's existing TraktApiException arm
+     * records the failure (TraktHistorySync logs and returns 0/false).
+     *
+     * The remote body is never echoed into the message (it may be anything,
+     * including a token-endpoint payload); only the decoder's reason is.
+     */
+    public function testUndecodableNonEmptySuccessBodyRaises(): void
     {
-        $this->assertSame([], $this->parseResponse(200, 'not json at all'));
-        $this->assertSame([], $this->parseResponse(200, '"a bare string"'));
+        $cases = [[200, 'not json at all'], [201, '<html>proxy page</html>'], [200, '{"truncated":']];
+
+        foreach ($cases as [$status, $body]) {
+            try {
+                $this->parseResponse($status, $body);
+                $this->fail('HTTP ' . $status . ' with an undecodable body must raise TraktApiException');
+            } catch (TraktAuthenticationException | TraktRateLimitException $e) {
+                $this->fail('Undecodable 2xx body must map to the plain API error, got ' . $e::class);
+            } catch (TraktApiException $e) {
+                $this->assertSame($status, $e->getCode());
+                $this->assertStringContainsString('Undecodable', $e->getMessage());
+                $this->assertStringNotContainsString($body, $e->getMessage());
+            }
+        }
+    }
+
+    /**
+     * The empty-body leg of the success path is unchanged: 204 No Content
+     * (and an empty / whitespace-only 2xx body) carries no payload by
+     * design and still yields []. Well-formed JSON that is not an
+     * object/list (a bare scalar) is decodable, so it keeps the narrowing
+     * to [] — only the undecodable case fails loud.
+     */
+    public function testEmptySuccessBodyAndBareScalarYieldEmptyArray(): void
+    {
         $this->assertSame([], $this->parseResponse(204, ''));
+        $this->assertSame([], $this->parseResponse(200, ''));
+        $this->assertSame([], $this->parseResponse(200, " \r\n"));
+        $this->assertSame([], $this->parseResponse(200, '"a bare string"'));
+        $this->assertSame([], $this->parseResponse(200, 'null'));
     }
 
     // --- transport ---------------------------------------------------------
