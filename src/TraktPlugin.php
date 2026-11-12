@@ -94,13 +94,27 @@ class TraktPlugin implements LifecycleInterface, ConfigurableInterface
     private ?TraktSettingsRepository $settingsRepository = null;
 
     /**
-     * Cipher used to encrypt OAuth tokens at rest (step S1). Optional: the host
-     * may not provide a key/cipher, in which case tokens are stored as-is and a
-     * warning is logged on persist. Resolved from the container in
+     * Cipher used to encrypt OAuth tokens at rest (step S1). Optional for a
+     * link that already sits in storage (tokens are then stored as-is and a
+     * warning is logged on persist), but a hard precondition of the FIRST
+     * persist of a newly linked account (TRK-4, refused without it). Resolved from the container in
      * {@see TraktPlugin::onEnable()} (same optional-service pattern as the
      * settings repository) but may also be injected directly (test seam).
      */
     private ?TokenCipher $tokenCipher = null;
+
+    /**
+     * Whether the persisted settings already carry an OAuth token — i.e.
+     * the account link predates the current persist (TRK-4).
+     *
+     * Seeded from the stored state (constructor settings, or the raw
+     * configure() array on every hydration) and updated after each
+     * successful write. {@see self::persistSettings()} uses it to tell a
+     * pre-existing plaintext link (warn-and-continue, so an upgrade or a
+     * lost key never strands a working account) from the FIRST persist of a
+     * newly linked account, which is refused outright without a cipher.
+     */
+    private bool $storedLinked = false;
 
     /**
      * Id of the periodic Trakt→Phlix pull timer armed by onEnable().
@@ -183,6 +197,8 @@ class TraktPlugin implements LifecycleInterface, ConfigurableInterface
         $this->api = $api;
         $this->settingsRepository = $settingsRepository;
         $this->tokenCipher = $tokenCipher;
+        // TRK-4: constructor settings are the stored state ("loaded from DB").
+        $this->storedLinked = self::carriesToken($this->settings->accessToken, $this->settings->refreshToken);
     }
 
     /**
@@ -228,6 +244,11 @@ class TraktPlugin implements LifecycleInterface, ConfigurableInterface
      */
     private function hydrateSettings(array $settings): void
     {
+        // TRK-4: judge "already linked" from the STORED fields themselves,
+        // before (and independently of) decryption — an envelope that fails
+        // to open is still a stored link, not a new one.
+        $this->storedLinked = self::carriesToken($settings['access_token'] ?? null, $settings['refresh_token'] ?? null);
+
         try {
             $this->settings = TraktSettings::fromArray($settings, $this->tokenCipher);
         } catch (TokenDecryptionFailedException $e) {
@@ -375,9 +396,10 @@ class TraktPlugin implements LifecycleInterface, ConfigurableInterface
      *  1. A {@see TokenCipher} bound in the container (host override), else
      *  2. a {@see SodiumTokenCipher} built from the `token_encryption_key`
      *     entry of the plugin config.
-     * When neither yields a cipher we leave it null and
-     * {@see TraktPlugin::persistSettings()} stores tokens as-is (with a
-     * warning) rather than hard-failing.
+     * When neither yields a cipher we leave it null rather than hard-failing
+     * the enable: {@see TraktPlugin::persistSettings()} then keeps storing a
+     * PRE-EXISTING link as-is (with a warning) but refuses the first persist
+     * of a newly linked account (TRK-4).
      *
      * @param ContainerInterface $container Host PSR-11 container
      *
@@ -410,7 +432,8 @@ class TraktPlugin implements LifecycleInterface, ConfigurableInterface
 
         if ($this->tokenCipher === null) {
             $this->logger->warning(
-                'Trakt: no token encryption key; OAuth tokens will be stored unencrypted'
+                'Trakt: no token encryption key; an existing link keeps storing OAuth tokens unencrypted'
+                . ' and a NEW link will be refused until a key is configured'
             );
         }
     }
@@ -867,8 +890,8 @@ class TraktPlugin implements LifecycleInterface, ConfigurableInterface
      * Get the current settings — RAW, including the OAuth token strings.
      *
      * The returned {@see TraktSettings} carries the live `accessToken` /
-     * `refreshToken` values (ciphertext when a TokenCipher is wired, the
-     * plaintext tokens otherwise). It is an in-process accessor for this
+     * `refreshToken` values (always the decrypted plaintext tokens — the
+     * TokenCipher applies only at rest). It is an in-process accessor for this
      * plugin's own collaborators and tests only: it MUST NOT be serialized,
      * logged, or returned over any HTTP/admin surface. Anything leaving the
      * process uses {@see TraktPlugin::getSettingsForSpa()} (redacted
@@ -1285,6 +1308,13 @@ class TraktPlugin implements LifecycleInterface, ConfigurableInterface
      * no-writer log to ERROR there, and the actual rotation is refused
      * before it can strand a credential ({@see self::performTokenRefresh}).
      *
+     * TRK-4: a token cipher is a HARD PRECONDITION of the first persist of a
+     * newly linked account — without one the write is refused (ERROR, nothing
+     * stored) rather than minting a fresh plaintext credential at rest. Only
+     * a link that already sits in storage (see {@see self::$storedLinked})
+     * keeps the legacy warn-and-continue degrade, because refusing there
+     * would strand a working account behind a missing or rotated key.
+     *
      * @return void
      */
     private function persistSettings(): void
@@ -1301,10 +1331,26 @@ class TraktPlugin implements LifecycleInterface, ConfigurableInterface
             return;
         }
 
-        if ($this->tokenCipher === null && $this->settings->hasTokens()) {
-            // Graceful degrade (S1): no cipher/key available, so the tokens are
-            // stored as-is. We still persist (losing tokens on restart would be
-            // worse), but warn so the operator can configure a key.
+        $carriesToken = self::carriesToken($this->settings->accessToken, $this->settings->refreshToken);
+
+        if ($this->tokenCipher === null && $carriesToken) {
+            if (!$this->storedLinked) {
+                // TRK-4: hard precondition — mirrors the PG-139 refusal in
+                // performTokenRefresh(). Storage holds no link yet, so there
+                // is nothing to strand: refuse to write the brand-new
+                // credential in plaintext and name the fix. The in-memory
+                // tokens stay for this process only; a restart drops them
+                // and the account must be re-linked once a key is set.
+                $this->logger->error(
+                    'Trakt: refusing to persist a newly linked account unencrypted; no token cipher'
+                    . ' (configure token_encryption_key or bind ' . TokenCipher::class . ', then re-link)'
+                );
+                return;
+            }
+            // Graceful degrade (S1) for a PRE-EXISTING link only: the tokens
+            // already sit in storage as-is, so we keep persisting them (losing
+            // a working link on restart would be worse), but warn so the
+            // operator can configure a key.
             $this->logger->warning('Trakt: no token cipher available; storing OAuth tokens unencrypted');
         }
 
@@ -1312,11 +1358,30 @@ class TraktPlugin implements LifecycleInterface, ConfigurableInterface
             // Encrypt tokens at rest (S1): the storage payload carries ciphertext
             // for access/refresh tokens, never the raw long-lived credentials.
             $this->settingsRepository->save($this->settings->toStorageArray($this->tokenCipher));
+            $this->storedLinked = $carriesToken;
         } catch (\Throwable $e) {
             $this->logger->warning('Trakt: failed to persist settings', [
                 'error' => $e->getMessage(),
             ]);
         }
+    }
+
+    /**
+     * Whether either OAuth token field holds a non-empty string.
+     *
+     * Deliberately "any token", not {@see TraktSettings::hasTokens()} (which
+     * needs the full pair): a lone access token is still a credential at
+     * rest, so the TRK-4 cipher precondition must see a half-linked write.
+     *
+     * @param mixed $accessToken  Stored or in-memory access token
+     * @param mixed $refreshToken Stored or in-memory refresh token
+     *
+     * @return bool
+     */
+    private static function carriesToken(mixed $accessToken, mixed $refreshToken): bool
+    {
+        return (is_string($accessToken) && $accessToken !== '')
+            || (is_string($refreshToken) && $refreshToken !== '');
     }
 
     /**

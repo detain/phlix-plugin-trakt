@@ -775,6 +775,88 @@ final class TraktPluginTest extends TestCase
     }
 
     /**
+     * TRK-4 (refusal arm): the FIRST persist of a newly linked account
+     * without a token cipher is refused outright — nothing reaches the
+     * writer and an ERROR names the missing key/binding. On the parent the
+     * writer received two plaintext payloads (the lone access token, then
+     * the pair) behind a mere warning.
+     */
+    public function testFirstPersistOfNewLinkIsRefusedWithoutCipher(): void
+    {
+        $repo = new RecordingSettingsRepository();
+        $logger = $this->createMock(\Psr\Log\LoggerInterface::class);
+        $logger->expects($this->exactly(2))->method('error')
+            ->with($this->stringContains('refusing to persist a newly linked account unencrypted'));
+        $logger->expects($this->never())->method('warning');
+
+        $plugin = new TraktPlugin(new TraktSettings(), $logger, new FakeTraktApi(), $repo, null);
+
+        $plugin->setAccessToken('new-access');
+        $plugin->setRefreshToken('new-refresh');
+
+        $this->assertSame([], $repo->saved, 'TRK-4: no plaintext credential may be minted at rest');
+    }
+
+    /**
+     * TRK-4 (refusal arm via the host path): configure() with an UNLINKED
+     * stored array marks the store as unlinked, so the first token write is
+     * refused even though the plugin was configured normally.
+     */
+    public function testConfiguredUnlinkedStoreRefusesFirstPersistWithoutCipher(): void
+    {
+        $repo = new RecordingSettingsRepository();
+        $plugin = new TraktPlugin(null, new NullLogger(), new FakeTraktApi(), $repo, null);
+        $plugin->configure(['enabled' => true, 'username' => 'u']);
+
+        $plugin->setAccessToken('new-access');
+
+        $this->assertSame([], $repo->saved);
+    }
+
+    /**
+     * TRK-4 (degrade arm): a link that already sits in storage keeps the
+     * legacy warn-and-continue — refusing there would strand a working
+     * account behind a missing or rotated key.
+     */
+    public function testPreExistingLinkKeepsWarnAndContinueWithoutCipher(): void
+    {
+        $repo = new RecordingSettingsRepository();
+        $logger = $this->createMock(\Psr\Log\LoggerInterface::class);
+        $logger->expects($this->once())->method('warning')->with($this->stringContains('unencrypted'));
+        $logger->expects($this->never())->method('error');
+
+        $plugin = new TraktPlugin(null, $logger, new FakeTraktApi(), $repo, null);
+        $plugin->configure(['enabled' => true, 'access_token' => 'old-a', 'refresh_token' => 'old-r']);
+
+        $plugin->setAccessToken('rotated-a');
+
+        $this->assertCount(1, $repo->saved);
+        $this->assertSame('rotated-a', $repo->saved[0]['access_token']);
+        $this->assertSame('old-r', $repo->saved[0]['refresh_token']);
+    }
+
+    /**
+     * TRK-4 invariant pin: with a cipher wired the new link persists
+     * normally — encrypted at rest — and later writes keep flowing.
+     */
+    public function testNewLinkPersistsEncryptedWhenCipherIsWired(): void
+    {
+        $repo = new RecordingSettingsRepository();
+        $cipher = new SodiumTokenCipher(random_bytes(SODIUM_CRYPTO_SECRETBOX_KEYBYTES));
+        $plugin = new TraktPlugin(new TraktSettings(), new NullLogger(), new FakeTraktApi(), $repo, $cipher);
+
+        $plugin->setAccessToken('new-access');
+        $plugin->setRefreshToken('new-refresh');
+
+        $this->assertCount(2, $repo->saved);
+        $this->assertIsString($repo->saved[1]['access_token']);
+        $this->assertIsString($repo->saved[1]['refresh_token']);
+        $this->assertNotSame('new-access', $repo->saved[1]['access_token']);
+        $this->assertSame('new-access', $cipher->decrypt($repo->saved[1]['access_token']));
+        $this->assertSame('new-refresh', $cipher->decrypt($repo->saved[1]['refresh_token']));
+    }
+
+    /**
      * ensureFreshToken is a safe no-op (returns true) when the token is valid.
      */
     public function testEnsureFreshTokenReturnsTrueForValidToken(): void

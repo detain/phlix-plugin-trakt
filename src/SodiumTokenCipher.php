@@ -49,7 +49,10 @@ final class SodiumTokenCipher implements TokenCipher
 
     /**
      * Build a cipher from a host-config key string, or return null when no
-     * usable key is configured (so the caller can degrade to store-as-is).
+     * usable key is configured. A null cipher is NOT a licence to store any
+     * token as-is: the plugin degrades to plaintext only for a link that
+     * already sits in storage, and refuses the first persist of a newly
+     * linked account ({@see TraktPlugin::persistSettings()}, TRK-4).
      *
      * Accepts the key as:
      *  - raw 32 bytes,
