@@ -1328,7 +1328,7 @@ class TraktPlugin implements LifecycleInterface, ConfigurableInterface
                 );
                 return;
             }
-            $this->logger->warning('Trakt: no settings repository available; token changes not persisted');
+            $this->logger->warning('Trakt: no settings writer available; token changes not persisted');
             return;
         }
 
@@ -1591,7 +1591,7 @@ class TraktPlugin implements LifecycleInterface, ConfigurableInterface
             // One gated refresh, then exactly one re-push (see docblock).
             if (!$this->refreshAfterAuthFailure($e, 'history push')) {
                 $this->logger->warning(
-                    'Trakt: history push dropped; expired access token and failed refresh'
+                    'Trakt: history push dropped; expired access token and refresh failed'
                     . ' (manual re-authorization required)',
                     ['media_item_id' => $mediaItemId]
                 );
@@ -1802,7 +1802,7 @@ class TraktPlugin implements LifecycleInterface, ConfigurableInterface
     {
         if (!$this->ensureFreshToken()) {
             $this->logger->warning(
-                'Trakt: history pull skipped; expired access token and failed refresh'
+                'Trakt: history pull skipped; expired access token and refresh failed'
                 . ' (manual re-authorization required)'
             );
 
