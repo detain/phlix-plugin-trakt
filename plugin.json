@@ -34,7 +34,7 @@
             "required": false,
             "tier": "advanced",
             "label": "Access token",
-            "description": "Obtained automatically when you authorize Phlix with Trakt — you do not enter this by hand. Create an API app only if you self-host credentials.",
+            "description": "Obtained automatically when you authorize Phlix with Trakt — you do not enter this by hand. Self-host API credentials (client id/secret/redirect URI) are set host-side on the Phlix server (TRAKT_* environment variables or admin Settings), not in this field; see the README.",
             "link": "https://app.trakt.tv/settings/apps/api/new",
             "link_text": "Trakt API applications"
         },
@@ -70,7 +70,7 @@
             "required": false,
             "tier": "advanced",
             "label": "Sync interval (minutes)",
-            "description": "How often the scheduled Trakt→Phlix history pull runs. Optional; default 30."
+            "description": "How often this plugin's own scheduled Trakt→Phlix history pull runs (minutes). The host server may also run its own watch-history sweep on a separate cadence. Optional; default 30."
         },
         "scrobble_enabled": {
             "type": "boolean",
