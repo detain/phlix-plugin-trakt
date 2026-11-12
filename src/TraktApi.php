@@ -296,6 +296,12 @@ class TraktApi
      * leaves the wire. A slug alone is presentable but NOT counted as
      * resolvable — matching the historic gate semantics verbatim.
      *
+     * An empty-string id is as unresolvable as a missing one (TRK-8): a
+     * bare `??` chain only skips null, so `'imdb_id' => ''` used to pass
+     * the gate and ship a doomed payload. Every id is normalized through
+     * resolvableId() first, so both coalesce chains (and the payload
+     * itself) see null for null-or-'' alike.
+     *
      * @param MediaItem $item Media item to address
      *
      * @return non-empty-array<'movie'|'episode', array<string, mixed>>|null
@@ -311,19 +317,19 @@ class TraktApi
         if ($item->type === 'movie') {
             $movie = [
                 'ids' => [
-                    'trakt' => $item->metadata['trakt_id'] ?? null,
-                    'slug' => $item->metadata['slug'] ?? null,
-                    'imdb' => $item->metadata['imdb_id'] ?? null,
-                    'tmdb' => $item->metadata['tmdb_id'] ?? null,
+                    'trakt' => self::resolvableId($item->metadata['trakt_id'] ?? null),
+                    'slug' => self::resolvableId($item->metadata['slug'] ?? null),
+                    'imdb' => self::resolvableId($item->metadata['imdb_id'] ?? null),
+                    'tmdb' => self::resolvableId($item->metadata['tmdb_id'] ?? null),
                 ],
             ];
         } elseif ($item->type === 'episode') {
             $episode = [
                 'ids' => [
-                    'trakt' => $item->metadata['trakt_id'] ?? null,
-                    'tvdb' => $item->metadata['tvdb_id'] ?? null,
-                    'imdb' => $item->metadata['imdb_id'] ?? null,
-                    'tmdb' => $item->metadata['tmdb_id'] ?? null,
+                    'trakt' => self::resolvableId($item->metadata['trakt_id'] ?? null),
+                    'tvdb' => self::resolvableId($item->metadata['tvdb_id'] ?? null),
+                    'imdb' => self::resolvableId($item->metadata['imdb_id'] ?? null),
+                    'tmdb' => self::resolvableId($item->metadata['tmdb_id'] ?? null),
                 ],
                 'season' => $item->metadata['season_number'] ?? 1,
                 'number' => $item->metadata['episode_number'] ?? 1,
@@ -359,6 +365,17 @@ class TraktApi
         // Unreachable past the gate (it only passes for a movie/episode
         // shape), but the builder never hands back a null-payload map.
         return null;
+    }
+
+    /**
+     * Normalize one external id for the resolvability gate (TRK-8).
+     *
+     * Null and the empty string both mean "no id"; any other value is
+     * passed through untouched (ints and non-empty strings alike).
+     */
+    private static function resolvableId(mixed $id): mixed
+    {
+        return $id === '' ? null : $id;
     }
 
     /**

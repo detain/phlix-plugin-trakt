@@ -744,6 +744,108 @@ final class TraktApiTest extends TestCase
         $this->assertSame('', $http->lastMethod, 'no HTTP may be attempted for an ID-less item');
     }
 
+    // --- TRK-8: empty-string ids are not resolvable ----------------------------
+
+    /**
+     * TRK-8 (PG-129 law): the resolvability gate used a bare `??` chain, which
+     * only skips null — an item whose ids are all `''` passed the gate and
+     * shipped a doomed payload. Empty-string ids must count as absent on every
+     * item-addressed write surface, for movies and episodes alike.
+     */
+    public function testEmptyStringIdsSkipEveryWriteSurfaceWithoutARequest(): void
+    {
+        $movie = new \Phlix\Media\Library\MediaItem(
+            id: 'mi-empty-ids',
+            name: 'Empty Ids Movie',
+            type: 'movie',
+            path: '/movies/empty-ids.mkv',
+            metadata: ['trakt_id' => '', 'slug' => '', 'imdb_id' => '', 'tmdb_id' => ''],
+        );
+        $episode = new \Phlix\Media\Library\MediaItem(
+            id: 'mi-ep-empty-ids',
+            name: 'Empty Ids Episode',
+            type: 'episode',
+            path: '/tv/show/s01e01.mkv',
+            metadata: [
+                'trakt_id' => '',
+                'tvdb_id' => '',
+                'imdb_id' => '',
+                'tmdb_id' => '',
+                'season_number' => 1,
+                'episode_number' => 1,
+            ],
+        );
+
+        foreach (['movie' => $movie, 'episode' => $episode] as $label => $item) {
+            $http = new MockHttpClient([['ok' => true]]);
+            $api = new TraktApi($http, self::CLIENT_ID, self::CLIENT_SECRET, new NullLogger());
+
+            $scrobble = $api->scrobbleStart($item, 10.0, 'scrobble-token');
+            $this->assertTrue($scrobble['skipped'], "$label scrobble must skip");
+
+            $history = $api->addToHistory($item, new \DateTimeImmutable('2024-01-01T00:00:00Z'), 'access-token');
+            $this->assertSame(['added' => false, 'skipped' => true], $history, "$label history must skip");
+
+            $added = $api->addRating($item, 7, 'access-token');
+            $this->assertTrue($added['skipped'], "$label addRating must skip");
+
+            $removed = $api->removeRating($item, 'access-token');
+            $this->assertTrue($removed['skipped'], "$label removeRating must skip");
+
+            $this->assertSame('', $http->lastMethod, "no HTTP may be attempted for an all-'' $label");
+        }
+    }
+
+    /**
+     * A slug alone is still not resolvable (historic gate semantics), so a
+     * non-empty slug beside empty-string ids must not reopen the gate.
+     */
+    public function testNonEmptySlugBesideEmptyStringIdsStillSkips(): void
+    {
+        $http = new MockHttpClient([['action' => 'start']]);
+        $api = new TraktApi($http, self::CLIENT_ID, self::CLIENT_SECRET, new NullLogger());
+
+        $item = new \Phlix\Media\Library\MediaItem(
+            id: 'mi-slug-only',
+            name: 'Slug Only Movie',
+            type: 'movie',
+            path: '/movies/slug-only.mkv',
+            metadata: ['trakt_id' => '', 'slug' => 'some-movie', 'imdb_id' => '', 'tmdb_id' => ''],
+        );
+
+        $result = $api->scrobbleStart($item, 0.0, 'scrobble-token');
+
+        $this->assertTrue($result['skipped']);
+        $this->assertSame('', $http->lastMethod);
+    }
+
+    /**
+     * One real id behind empty-string siblings still resolves; the empty
+     * siblings travel as null (absent), never as a literal `''` id.
+     */
+    public function testRealIdBehindEmptyStringSiblingsStillSendsWithEmptiesNulled(): void
+    {
+        $http = new MockHttpClient([['action' => 'start', 'watched_at' => '2026-06-28T00:00:00Z']]);
+        $api = new TraktApi($http, self::CLIENT_ID, self::CLIENT_SECRET, new NullLogger());
+
+        $item = new \Phlix\Media\Library\MediaItem(
+            id: 'mi-tmdb-only',
+            name: 'Tmdb Only Movie',
+            type: 'movie',
+            path: '/movies/tmdb-only.mkv',
+            metadata: ['trakt_id' => '', 'imdb_id' => '', 'tmdb_id' => 42],
+        );
+
+        $result = $api->scrobbleStart($item, 5.0, 'scrobble-token');
+
+        $this->assertArrayNotHasKey('skipped', $result);
+        $this->assertSame('POST', $http->lastMethod);
+        $this->assertSame(
+            ['trakt' => null, 'slug' => null, 'imdb' => null, 'tmdb' => 42],
+            $http->lastData['movie']['ids'] ?? null
+        );
+    }
+
     // --- getRatings pagination wire (PG-133) ---------------------------------
 
     /**
