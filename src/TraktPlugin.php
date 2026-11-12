@@ -890,8 +890,9 @@ class TraktPlugin implements LifecycleInterface, ConfigurableInterface
      * Get the current settings — RAW, including the OAuth token strings.
      *
      * The returned {@see TraktSettings} carries the live `accessToken` /
-     * `refreshToken` values (always the decrypted plaintext tokens — the
-     * TokenCipher applies only at rest). It is an in-process accessor for this
+     * `refreshToken` values (the decrypted plaintext whenever a TokenCipher is
+     * wired; a cipher-less hydration of an encrypted store carries the stored
+     * value verbatim). It is an in-process accessor for this
      * plugin's own collaborators and tests only: it MUST NOT be serialized,
      * logged, or returned over any HTTP/admin surface. Anything leaving the
      * process uses {@see TraktPlugin::getSettingsForSpa()} (redacted
