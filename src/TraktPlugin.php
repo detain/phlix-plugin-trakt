@@ -1438,7 +1438,9 @@ class TraktPlugin implements LifecycleInterface, ConfigurableInterface
 
         if ($redirectUri === null) {
             $this->logger->warning(
-                'Trakt: operator config has no redirect_uri; falling back to the built-in default',
+                'Trakt: operator config has no redirect_uri; falling back to the built-in default'
+                . ' (a localhost placeholder that will NOT match a real Trakt app registration;'
+                . ' set TRAKT_REDIRECT_URI or trakt.redirect_uri to the callback registered with Trakt)',
                 ['default' => TraktApi::DEFAULT_REDIRECT_URI]
             );
         }

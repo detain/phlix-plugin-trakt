@@ -39,6 +39,16 @@ https://github.com/detain/phlix-plugin-trakt
 php bin/phlix plugin:install https://github.com/detain/phlix-plugin-trakt
 ```
 
+> **Set `redirect_uri` before you authorize.** The redirect URI you register
+> on your Trakt API app must match the one Phlix sends, byte for byte. If no
+> `redirect_uri` is configured, the plugin falls back to the historic built-in
+> default `https://localhost/api/v1/oauth/trakt/callback` (kept unchanged so
+> existing registrations keep working) and logs a warning. That localhost
+> value only suits a local install: for any other host, set
+> `TRAKT_REDIRECT_URI` (or the `trakt.redirect_uri` admin setting) to your
+> server's real callback URL and register the same URL with Trakt. See
+> **Settings** below.
+
 ## Settings
 
 | Setting | Type | Required | Secret | Tier | Default | Description |
