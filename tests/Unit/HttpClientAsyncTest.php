@@ -274,6 +274,33 @@ final class HttpClientAsyncTest extends TestCase
         $this->assertSame('{"movies":[{"ids":{"trakt":1}}]}', Client::$lastRequest['options']['data']);
     }
 
+    /**
+     * TRK-7: the async path used to substitute '' for an unencodable body
+     * and send it anyway. It must now throw before any client is built or
+     * any request dispatched.
+     */
+    public function testAsyncUnencodablePostBodyFailsBeforeSend(): void
+    {
+        Client::$responses['https://api.trakt.tv/sync/history'] = [
+            'status' => 200,
+            'headers' => [],
+            'body' => '{"added":1}',
+        ];
+
+        try {
+            (new HttpClient(timeout: 1))->post(
+                'https://api.trakt.tv/sync/history',
+                ['movies' => [['title' => "bad \xB1\x31 utf8"]]]
+            );
+            $this->fail('Expected TraktApiException for an unencodable body');
+        } catch (TraktApiException $e) {
+            $this->assertStringStartsWith('Request body could not be JSON-encoded:', $e->getMessage());
+        }
+
+        $this->assertNull(Client::$lastRequest, 'nothing may be dispatched');
+        $this->assertSame(0, Client::$constructs, 'no client built for a doomed request');
+    }
+
     public function testAsyncUnauthorizedThrowsAuthenticationException(): void
     {
         Client::$responses['https://api.trakt.tv/users/me'] = [

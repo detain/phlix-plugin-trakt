@@ -223,6 +223,10 @@ class HttpClient implements HttpClientInterface
             throw new TraktApiException('Refusing non-HTTPS async request to ' . $url);
         }
 
+        // TRK-7: encode BEFORE anything is built or sent — an unencodable
+        // payload fails locally instead of going out as an empty body.
+        $body = $method === 'POST' ? self::encodeRequestBody($data) : null;
+
         $client = $this->asyncClient($host);
 
         $state = ['done' => false, 'response' => null, 'error' => null];
@@ -240,9 +244,8 @@ class HttpClient implements HttpClientInterface
             },
         ];
 
-        if ($method === 'POST') {
-            $encoded = json_encode($data);
-            $options['data'] = is_string($encoded) ? $encoded : '';
+        if ($body !== null) {
+            $options['data'] = $body;
         }
 
         $client->request($url, $options);
@@ -333,6 +336,10 @@ class HttpClient implements HttpClientInterface
      */
     private function requestCurl(string $method, string $url, array $data, array $headers): array
     {
+        // TRK-7: encode BEFORE the handle exists — an unencodable payload
+        // fails locally instead of being POSTed with no body at all.
+        $body = $method === 'POST' ? self::encodeRequestBody($data) : null;
+
         $ch = curl_init();
 
         $requestHeaders = [];
@@ -374,12 +381,9 @@ class HttpClient implements HttpClientInterface
             CURLOPT_PROTOCOLS => CURLPROTO_HTTPS,
         ]);
 
-        if ($method === 'POST') {
+        if ($body !== null) {
             curl_setopt($ch, CURLOPT_POST, true);
-            $jsonData = json_encode($data);
-            if (is_string($jsonData)) {
-                curl_setopt($ch, CURLOPT_POSTFIELDS, $jsonData);
-            }
+            curl_setopt($ch, CURLOPT_POSTFIELDS, $body);
         }
 
         if ($url !== '') {
@@ -403,6 +407,28 @@ class HttpClient implements HttpClientInterface
         }
 
         return $this->parseResponse((int) $httpCode, $bodyState['body'], $responseHeaders);
+    }
+
+    /**
+     * JSON-encode a request body, failing loud before anything is sent.
+     *
+     * TRK-7: both transports used to swallow a json_encode() failure (e.g. an
+     * invalid UTF-8 title in a scrobble/history payload) — the async path
+     * sent an empty string, the cURL path a bodiless POST — so Trakt answered
+     * a malformed request and the caller saw a remote error for a local
+     * defect. The encoder reason is surfaced; the payload is never echoed.
+     *
+     * @param array<string, mixed> $data Request body
+     *
+     * @throws TraktApiException When the payload cannot be JSON-encoded.
+     */
+    private static function encodeRequestBody(array $data): string
+    {
+        try {
+            return json_encode($data, JSON_THROW_ON_ERROR);
+        } catch (\JsonException $e) {
+            throw new TraktApiException('Request body could not be JSON-encoded: ' . $e->getMessage());
+        }
     }
 
     /**

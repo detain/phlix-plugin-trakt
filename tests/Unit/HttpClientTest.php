@@ -460,6 +460,27 @@ final class HttpClientTest extends TestCase
         );
     }
 
+    /**
+     * TRK-7: an unencodable payload (invalid UTF-8) used to go out as a
+     * bodiless POST, so the failure surfaced as whatever the remote said. It
+     * must now fail locally, before the handle is built: against the dead
+     * port a sent request would report 'cURL error:' instead, so the
+     * encoder message proves nothing left the process.
+     */
+    public function testUnencodablePostBodyFailsBeforeCurlSends(): void
+    {
+        $client = new HttpClient(timeout: 5);
+
+        try {
+            $client->post('https://127.0.0.1:1/unreachable', ['title' => "bad \xB1\x31 utf8"]);
+            $this->fail('Expected TraktApiException for an unencodable body');
+        } catch (TraktApiException $e) {
+            $this->assertStringStartsWith('Request body could not be JSON-encoded:', $e->getMessage());
+            $this->assertStringNotContainsString('cURL error', $e->getMessage());
+            $this->assertStringNotContainsString('bad ', $e->getMessage(), 'payload must not be echoed');
+        }
+    }
+
     // --- PG-144: remote text bounded, response body capped ------------------
 
     public function testLongRemoteErrorTextIsBoundedIntoApiError(): void
