@@ -169,6 +169,35 @@ final class TraktPluginOnEnableCoverageTest extends TestCase
         $prop->setAccessible(true);
         $this->assertNull($prop->getValue($plugin), 'precondition: the writer really is absent');
     }
+
+    /**
+     * TRK-18: a sparse container (every lookup throws) degrades to warnings;
+     * onEnable never throws.
+     */
+    public function testOnEnableWithFullySparseContainerNeverThrows(): void
+    {
+        $plugin = new TraktPlugin(new TraktSettings(), new NullLogger());
+        $container = new class implements ContainerInterface {
+            public function get(string $id): mixed
+            {
+                throw new \RuntimeException('not bound: ' . $id);
+            }
+
+            public function has(string $id): bool
+            {
+                return false;
+            }
+        };
+
+        $plugin->onEnable($container);
+
+        $ref = new \ReflectionClass($plugin);
+        foreach (['itemRepository', 'watchHistory', 'db'] as $name) {
+            $prop = $ref->getProperty($name);
+            $prop->setAccessible(true);
+            $this->assertNull($prop->getValue($plugin), $name);
+        }
+    }
 }
 
 /**

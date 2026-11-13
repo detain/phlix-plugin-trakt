@@ -294,16 +294,36 @@ class TraktPlugin implements LifecycleInterface, ConfigurableInterface
     public function onEnable(ContainerInterface $container): void
     {
         // --- WIRE: resolve host services (object lookups; no network/DB I/O) ---
+        // TRK-18: every host-service lookup is guarded uniformly — a sparse
+        // container degrades to a warning, onEnable never throws.
         if ($this->logger instanceof NullLogger) {
-            $logger = $container->get(LoggerInterface::class);
-            $this->logger = $logger instanceof LoggerInterface ? $logger : new NullLogger();
+            try {
+                $logger = $container->get(LoggerInterface::class);
+                $this->logger = $logger instanceof LoggerInterface ? $logger : new NullLogger();
+            } catch (\Throwable) {
+                $this->logger = new NullLogger();
+            }
         }
 
-        $itemRepo = $container->get(ItemRepository::class);
-        $this->itemRepository = $itemRepo instanceof ItemRepository ? $itemRepo : null;
+        try {
+            $itemRepo = $container->get(ItemRepository::class);
+            $this->itemRepository = $itemRepo instanceof ItemRepository ? $itemRepo : null;
+        } catch (\Throwable $e) {
+            $this->logger->warning('Trakt: item repository unavailable; Trakt→Phlix sync will not function', [
+                'error' => $e->getMessage(),
+            ]);
+            $this->itemRepository = null;
+        }
 
-        $watchHist = $container->get(WatchHistory::class);
-        $this->watchHistory = $watchHist instanceof WatchHistory ? $watchHist : null;
+        try {
+            $watchHist = $container->get(WatchHistory::class);
+            $this->watchHistory = $watchHist instanceof WatchHistory ? $watchHist : null;
+        } catch (\Throwable $e) {
+            $this->logger->warning('Trakt: watch history unavailable; Trakt→Phlix sync will not function', [
+                'error' => $e->getMessage(),
+            ]);
+            $this->watchHistory = null;
+        }
 
         try {
             $db = $container->get(Connection::class);
