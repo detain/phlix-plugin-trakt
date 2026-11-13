@@ -278,14 +278,14 @@ final class DbTraktOAuthStateStore implements TraktOAuthStateStore
     }
 
     /**
-     * Delete expired TRAKT entries in batches to prevent table bloat.
+     * Delete expired Trakt entries in batches to prevent table bloat.
      *
      * Called after each {@see consume()} to lazily clean up stale entries.
      * This approach avoids adding overhead to every put() call.
      *
      * The sweep is provider-scoped: the oauth_state_store table is SHARED
      * across every OAuth-flavoured plugin/host flow (OIDC, GitHub, WebAuthn
-     * all keep rows here), and a trakt callback has no business deleting
+     * all keep rows here), and a Trakt callback has no business deleting
      * other providers' state rows — cross-plugin write amplification is a
      * separation violation of the unified-table contract. A failed sweep is
      * logged loudly rather than silently regrowing the table; it never
@@ -300,10 +300,10 @@ final class DbTraktOAuthStateStore implements TraktOAuthStateStore
             );
 
             if ($result === false) {
-                $this->logger->warning('Trakt OAuth state cleanup DELETE failed; expired trakt rows may accumulate');
+                $this->logger->warning('Trakt OAuth state cleanup DELETE failed; expired Trakt rows may accumulate');
             }
         } catch (\Throwable $e) {
-            $this->logger->warning('Trakt OAuth state cleanup raised; expired trakt rows may accumulate', [
+            $this->logger->warning('Trakt OAuth state cleanup raised; expired Trakt rows may accumulate', [
                 'error' => $e->getMessage(),
             ]);
         }
