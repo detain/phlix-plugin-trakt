@@ -53,7 +53,7 @@ php bin/phlix plugin:install https://github.com/detain/phlix-plugin-trakt
 
 | Setting | Type | Required | Secret | Tier | Default | Description |
 |---|---|---|---|---|---|---|
-| `enabled` | boolean | No | No | `standard` | `false` | Master on/off for Trakt scrobbling and sync. Optional; default off. |
+| `enabled` | boolean | No | No | `standard` | `false` | Turns Trakt scrobbling and sync on or off. Optional; default off. |
 | `username` | string | No | No | `advanced` | `""` | The Trakt account Phlix is linked to; set automatically during authorization. The plugin stays idle until it is present. |
 | `access_token` | string | No | Yes | `advanced` | `null` | Obtained automatically when you authorize Phlix with Trakt — you do not enter this by hand. Create an [API app](https://app.trakt.tv/settings/apps/api/new) only if you self-host credentials. |
 | `refresh_token` | string | No | Yes | `advanced` | `null` | Set automatically during authorization; used to renew the access token. Not entered by hand. |

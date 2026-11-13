@@ -1717,8 +1717,8 @@ class TraktPlugin implements LifecycleInterface, ConfigurableInterface
      * ({@see self::runScheduledSync()}): the host boots this plugin from its
      * own plugin-registry enabled column and never consults the plugin's
      * `enabled` SETTING, so the plugin is the sole enforcer of what
-     * plugin.json/README document as the "Master on/off for Trakt scrobbling
-     * and sync". A master-off boot arms nothing.
+     * plugin.json/README document as the "Turns Trakt scrobbling
+     * and sync on or off". A master-off boot arms nothing.
      *
      * Host-interaction note (M-TRAKT-13): this timer runs INDEPENDENTLY of
      * the host server's own watch-history sweep. Nothing in this plugin
