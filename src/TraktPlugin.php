@@ -1380,13 +1380,15 @@ class TraktPlugin implements LifecycleInterface, ConfigurableInterface
                 // TRK-4: hard precondition — mirrors the PG-139 refusal in
                 // performTokenRefresh(). Storage holds no link yet, so there
                 // is nothing to strand: refuse to write the brand-new
-                // credential in plaintext and name the fix. The in-memory
-                // tokens stay for this process only; a restart drops them
-                // and the account must be re-linked once a key is set.
+                // credential in plaintext and name the fix. TRK-S4: fail
+                // closed in memory too — the refused tokens are dropped
+                // (preferences kept) so the caller and the SPA never see a
+                // linked account that silently unlinks on restart.
                 $this->logger->error(
                     'Trakt plugin: refusing to persist a newly linked account unencrypted; no token cipher'
                     . ' (configure token_encryption_key or bind ' . TokenCipher::class . ', then re-link)'
                 );
+                $this->settings = $this->settings->withTokenPair(null, null, null);
                 return;
             }
             // Graceful degrade (S1) for a PRE-EXISTING link only: the tokens

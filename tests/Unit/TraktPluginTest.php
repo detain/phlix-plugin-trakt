@@ -795,6 +795,10 @@ final class TraktPluginTest extends TestCase
         $plugin->setRefreshToken('new-refresh');
 
         $this->assertSame([], $repo->saved, 'TRK-4: no plaintext credential may be minted at rest');
+        // TRK-S4: the refused tokens are dropped in memory (fail closed).
+        $this->assertFalse($plugin->getSettings()->hasTokens());
+        $this->assertNull($plugin->getSettings()->accessToken);
+        $this->assertNull($plugin->getSettings()->refreshToken);
     }
 
     /**
