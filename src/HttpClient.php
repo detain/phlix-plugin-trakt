@@ -166,6 +166,9 @@ class HttpClient implements HttpClientInterface
         if (!isset($this->asyncClients[$host])) {
             $this->asyncClients[$host] = new \Workerman\Http\Client([
                 'timeout' => $this->timeout,
+                // TRK-2: redirects are refused at the client level too (the
+                // per-request option below is the primary kill).
+                'max_redirect' => 0,
                 'context' => [
                     'ssl' => [
                         'verify_peer' => true,
@@ -217,6 +220,15 @@ class HttpClient implements HttpClientInterface
         // that our replacement clobbers. The cURL pins (CURLOPT_SSL_VERIFYPEER,
         // CURLOPT_SSL_VERIFYHOST=2, HTTPS-only CURLOPT_PROTOCOLS) are the
         // reference; the scheme guard below mirrors its HTTPS-only law.
+        //
+        // Contract split (TRK-2): CODE-ENFORCED here — the HTTPS-only scheme
+        // guard, the strict ssl context (verify_peer, verify_peer_name,
+        // allow_self_signed=false, peer_name) handed to the client, and the
+        // explicit max_redirect=0 option so a 3xx is never followed (the
+        // bearer token must not ride a redirect). VENDOR-DELEGATED — the
+        // host-provided workerman/http-client actually honouring that context
+        // and max_redirect; the stub-based assertions pin what we pass, and
+        // the phlix-server lane attests the pinned vendor behaviour.
         $scheme = parse_url($url, PHP_URL_SCHEME);
         $host = parse_url($url, PHP_URL_HOST);
         if ($scheme !== 'https' || !is_string($host) || $host === '') {
@@ -234,6 +246,7 @@ class HttpClient implements HttpClientInterface
         $options = [
             'method' => $method,
             'headers' => $headers,
+            'max_redirect' => 0,
             'success' => function (mixed $response) use (&$state): void {
                 $state['response'] = $response;
                 $state['done'] = true;

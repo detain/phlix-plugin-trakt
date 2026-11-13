@@ -164,6 +164,30 @@ final class HttpClientAsyncTest extends TestCase
     }
 
     /**
+     * TRK-2: the effective async TLS context is strict and redirects are
+     * killed explicitly (client config and per-request option).
+     */
+    public function testAsyncTransportPinsStrictTlsContextAndKillsRedirects(): void
+    {
+        Client::$responses['https://api.trakt.tv/users/me'] = [
+            'status' => 200,
+            'headers' => [],
+            'body' => '{}',
+        ];
+
+        (new HttpClient(timeout: 1))->get('https://api.trakt.tv/users/me');
+
+        $ssl = Client::$lastConfig['context']['ssl'] ?? null;
+        $this->assertIsArray($ssl);
+        $this->assertTrue($ssl['verify_peer']);
+        $this->assertTrue($ssl['verify_peer_name']);
+        $this->assertFalse($ssl['allow_self_signed']);
+        $this->assertSame('api.trakt.tv', $ssl['peer_name']);
+        $this->assertSame(0, Client::$lastConfig['max_redirect'] ?? null);
+        $this->assertSame(0, Client::$lastRequest['options']['max_redirect'] ?? null);
+    }
+
+    /**
      * PG-144: a response body past the ceiling is refused LOUDLY before it
      * reaches the parser — a hostile or proxy-swollen answer must not be
      * handed to json_decode and echoed onward.

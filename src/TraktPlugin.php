@@ -519,7 +519,8 @@ class TraktPlugin implements LifecycleInterface, ConfigurableInterface
      * so this method wires its runtime collaborators itself (idempotently) when
      * they are missing via the hydrate-only wireServices() (no timer arm). It
      * only resolves container services + builds the (boot-safe, no-I/O) API
-     * client, so it is safe to call here on the sync cadence — it performs NO blocking network/token work.
+     * client, so it is safe to call here on the sync cadence — it performs NO
+     * blocking network/token work.
      *
      * @param \Psr\Container\ContainerInterface $container Host container for
      *     collaborator lookup.
