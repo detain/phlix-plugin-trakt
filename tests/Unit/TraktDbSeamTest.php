@@ -145,6 +145,59 @@ final class TraktDbSeamTest extends TestCase
         $this->assertSame(['$.imdb_id', '$.imdb_id', 'tt9'], $calls[2]['params']);
     }
 
+    /**
+     * TRK-S10: two page entries sharing one external id resolve off ONE
+     * bound value and both receive the matched media item.
+     */
+    public function testBatchResolveTwoEntriesSharingOneExternalIdBothResolve(): void
+    {
+        $db = new TestableConnection();
+        $db->setResults([[['id' => 'm1', 'ext_id' => '11']]]);
+        $sync = $this->createSync($db);
+
+        $items = [
+            ['movie' => ['ids' => ['tmdb' => 11]]],
+            ['movie' => ['ids' => ['tmdb' => 11]]],
+        ];
+        $out = $this->invokePrivate($sync, 'resolveMediaItemIdsBatch', [$items]);
+
+        $this->assertSame([0 => 'm1', 1 => 'm1'], $out);
+        $calls = $db->getCalls();
+        $this->assertCount(1, $calls);
+        $this->assertStringContainsString('IN (?)', $calls[0]['sql']);
+        $this->assertSame(['$.tmdb_id', '$.tmdb_id', '11'], $calls[0]['params']);
+    }
+
+    /**
+     * TRK-S10: the OR'd LIKE fallback escapes wildcards per pattern, and a
+     * shared external id contributes one pattern that resolves both entries.
+     */
+    public function testBatchResolveLikeFallbackEscapesWildcardsAndSharesOneId(): void
+    {
+        $db = new TestableConnection();
+        $db->setResults([
+            [],                                                                 // JSON miss
+            [['id' => 'm7', 'metadata_json' => '{"imdb_id":"a%b_c"}']],         // LIKE hit
+        ]);
+        $sync = $this->createSync($db);
+
+        $items = [
+            ['movie' => ['ids' => ['imdb' => 'a%b_c']]],
+            ['movie' => ['ids' => ['imdb' => 'a%b_c']]],
+            ['movie' => ['ids' => ['imdb' => 'x_y']]],
+        ];
+        $out = $this->invokePrivate($sync, 'resolveMediaItemIdsBatch', [$items]);
+
+        $this->assertSame([0 => 'm7', 1 => 'm7', 2 => null], $out);
+        $calls = $db->getCalls();
+        $this->assertCount(2, $calls);
+        $this->assertStringContainsString('metadata_json LIKE ? OR metadata_json LIKE ?', $calls[1]['sql']);
+        $this->assertSame(
+            ['%"imdb\\_id":"a\\%b\\_c"%', '%"imdb\\_id":"x\\_y"%'],
+            $calls[1]['params']
+        );
+    }
+
     public function testTitleYearFallbackEscapesLikeWildcardsInTheTitle(): void
     {
         $db = new TestableConnection();
