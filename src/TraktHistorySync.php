@@ -228,11 +228,21 @@ class TraktHistorySync
 
         $written = 0;
 
-        foreach ($history as $item) {
+        // TRK-10: resolve external ids one page-sized chunk at a time — a
+        // fixed number of queries per id-type per page instead of up to six
+        // single-row lookups per history entry (N+1).
+        $resolved = [];
+        foreach (array_chunk($history, self::HISTORY_PAGE_SIZE, true) as $chunk) {
+            foreach ($this->resolveMediaItemIdsBatch($chunk) as $k => $v) {
+                $resolved[$k] = $v;
+            }
+        }
+
+        foreach ($history as $itemKey => $item) {
             if (!is_array($item)) {
                 continue;
             }
-            $mediaItemId = $this->findMediaItemId($item);
+            $mediaItemId = $resolved[$itemKey] ?? null;
             if ($mediaItemId === null) {
                 continue;
             }
@@ -434,38 +444,129 @@ class TraktHistorySync
     }
 
     /**
-     * Find a local media item ID from a Trakt history entry.
+     * Batch-resolve local media item ids for a page of Trakt history entries.
      *
-     * Matches TMDB, TVDB, or IMDB IDs from the Trakt history item against
-     * the local media_items.metadata_json column to resolve the local ID.
+     * Same semantics as the former per-entry lookup (tmdb, tvdb,
+     * imdb priority; JSON_EXTRACT equality first, LIKE fallback second), but
+     * each id-type costs one JSON_EXTRACT IN (...) query and at most one
+     * LIKE ... OR ... query for the whole page. All values stay bound
+     * parameters; LIKE metacharacters in remote values are neutralised.
      *
-     * @param array<mixed, mixed> $item Trakt history item with movie or episode ids
+     * @param array<array-key, mixed> $items History entries keyed as the caller keys them
      *
-     * @return string|null Local media_items.id if resolved, null otherwise.
+     * @return array<array-key, string|null> Resolved local id (or null) per input key
      */
-    private function findMediaItemId(array $item): ?string
+    private function resolveMediaItemIdsBatch(array $items): array
     {
-        $movie = $item['movie'] ?? null;
-        $episode = $item['episode'] ?? null;
-
-        $ids = null;
-        if (is_array($movie) && isset($movie['ids']) && is_array($movie['ids'])) {
-            $ids = $movie['ids'];
-        } elseif (is_array($episode) && isset($episode['ids']) && is_array($episode['ids'])) {
-            $ids = $episode['ids'];
+        $resolved = [];
+        /** @var array<array-key, array<mixed, mixed>> $idsByKey */
+        $idsByKey = [];
+        foreach ($items as $key => $item) {
+            $resolved[$key] = null;
+            if (!is_array($item)) {
+                continue;
+            }
+            // No payload-driven shortcuts: resolution goes through the
+            // external-id lookup ONLY. A pre-seeded '_resolved_media_item_id'
+            // key is ignored (review trakt__srphp m14) — it would let an
+            // UNTRUSTED Trakt payload force writes against an arbitrary
+            // local media item id. Tests steer the DB double instead.
+            $movie = $item['movie'] ?? null;
+            $episode = $item['episode'] ?? null;
+            if (is_array($movie) && isset($movie['ids']) && is_array($movie['ids'])) {
+                $idsByKey[$key] = $movie['ids'];
+            } elseif (is_array($episode) && isset($episode['ids']) && is_array($episode['ids'])) {
+                $idsByKey[$key] = $episode['ids'];
+            }
         }
 
-        if ($ids === null) {
-            return null;
+        foreach (['tmdb', 'tvdb', 'imdb'] as $idType) {
+            // value => list of still-unresolved keys wanting it
+            $wanted = [];
+            foreach ($idsByKey as $key => $ids) {
+                if ($resolved[$key] !== null) {
+                    continue;
+                }
+                $externalId = $ids[$idType] ?? null;
+                if ($externalId === null || $externalId === '' || !is_scalar($externalId)) {
+                    continue;
+                }
+                $wanted[(string) $externalId][] = $key;
+            }
+            if ($wanted === []) {
+                continue;
+            }
+
+            // Pass 1: typed-key JSON_EXTRACT equality, one IN (...) query.
+            $values = array_map('strval', array_keys($wanted));
+            $jsonPath = '$.' . $idType . '_id';
+            $marks = implode(',', array_fill(0, count($values), '?'));
+            $rows = $this->db->query(
+                'SELECT id, JSON_UNQUOTE(JSON_EXTRACT(metadata_json, ?)) AS ext_id FROM media_items'
+                . " WHERE JSON_EXTRACT(metadata_json, ?) IN ($marks)",
+                array_merge([$jsonPath, $jsonPath], $values)
+            );
+            if (is_array($rows)) {
+                foreach ($rows as $row) {
+                    if (!is_array($row)) {
+                        continue;
+                    }
+                    $id = $this->parseIdColumnFromQueryResult([$row]);
+                    $ext = $row['ext_id'] ?? null;
+                    if ($id === null || !is_scalar($ext)) {
+                        continue;
+                    }
+                    $ext = (string) $ext;
+                    foreach ($wanted[$ext] ?? [] as $key) {
+                        $resolved[$key] ??= $id;
+                    }
+                    unset($wanted[$ext]);
+                }
+            }
+
+            if ($wanted === []) {
+                continue;
+            }
+
+            // Pass 2: LIKE fallback (older MySQL / differently stored values),
+            // one OR'd query for the values the JSON pass did not resolve.
+            $patterns = [];
+            $needles = [];
+            foreach (array_keys($wanted) as $value) {
+                $value = (string) $value;
+                $patterns[] = '%"' . $idType . '\\_id":"' . self::escapeLikeWildcards($value) . '"%';
+                $needles[$value] = '"' . $idType . '_id":"' . $value . '"';
+            }
+            $likeSql = implode(' OR ', array_fill(0, count($patterns), 'metadata_json LIKE ?'));
+            $rows = $this->db->query(
+                "SELECT id, metadata_json FROM media_items WHERE $likeSql",
+                $patterns
+            );
+            if (!is_array($rows)) {
+                continue;
+            }
+            foreach ($rows as $row) {
+                if (!is_array($row)) {
+                    continue;
+                }
+                $id = $this->parseIdColumnFromQueryResult([$row]);
+                $meta = $row['metadata_json'] ?? null;
+                if ($id === null || !is_string($meta)) {
+                    continue;
+                }
+                foreach ($needles as $value => $needle) {
+                    // LIKE under the default collation is case-insensitive.
+                    if (isset($wanted[$value]) && stripos($meta, $needle) !== false) {
+                        foreach ($wanted[$value] as $key) {
+                            $resolved[$key] ??= $id;
+                        }
+                        unset($wanted[$value]);
+                    }
+                }
+            }
         }
 
-        // No payload-driven shortcuts: resolution goes through the external-id
-        // lookup ONLY. A pre-seeded '_resolved_media_item_id' key is ignored —
-        // it used to be a test seam consulted on the path that parses
-        // UNTRUSTED Trakt API responses, so a payload carrying that key could
-        // force history writes against an arbitrary local media item id
-        // (review trakt__srphp m14). Tests steer the DB double instead.
-        return $this->findMediaItemIdByExternalIds($ids);
+        return $resolved;
     }
 
     /**

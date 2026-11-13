@@ -179,7 +179,7 @@ final class TraktRatingPullPersistenceTest extends TestCase
 
         $db = new TestableConnection();
         $db->setResults([
-            [['id' => self::MEDIA_ITEM_ID]],  // external-id lookup succeeds
+            [['id' => self::MEDIA_ITEM_ID, 'ext_id' => '123']],  // external-id lookup succeeds
             [],                               // no user_profiles row owns the profile
         ]);
 
@@ -225,7 +225,7 @@ final class TraktRatingPullPersistenceTest extends TestCase
 
         $db = new TestableConnection();
         $db->setResults([
-            [['id' => self::MEDIA_ITEM_ID]],  // external-id lookup
+            [['id' => self::MEDIA_ITEM_ID, 'ext_id' => '123']],  // external-id lookup
         ]);
 
         $watchHistory = $this->getMockBuilder(WatchHistory::class)
@@ -264,7 +264,7 @@ final class TraktRatingPullPersistenceTest extends TestCase
 
         $db = new TestableConnection();
         $db->setResults([
-            [['id' => self::MEDIA_ITEM_ID]],
+            [['id' => self::MEDIA_ITEM_ID, 'ext_id' => '123']],
         ]);
 
         // Trakt `runtime` is whole minutes (TRK-S9).
@@ -303,7 +303,7 @@ final class TraktRatingPullPersistenceTest extends TestCase
 
         $db = new TestableConnection();
         $db->setResults([
-            [['id' => self::MEDIA_ITEM_ID]],  // external-id lookup succeeds
+            [['id' => self::MEDIA_ITEM_ID, 'ext_id' => '123']],  // external-id lookup succeeds
             [['user_id' => self::USER_ID]],   // owner resolves
             false,                             // the upsert itself FAILS
         ]);

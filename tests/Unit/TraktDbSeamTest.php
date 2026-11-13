@@ -97,6 +97,54 @@ final class TraktDbSeamTest extends TestCase
         );
     }
 
+    public function testBatchResolveIssuesOneJsonQueryPerIdTypeForAWholePage(): void
+    {
+        $db = new TestableConnection();
+        // One JSON pass resolves both tmdb ids; nothing left to look up.
+        $db->setResults([[
+            ['id' => 'm1', 'ext_id' => '11'],
+            ['id' => 'm2', 'ext_id' => '22'],
+        ]]);
+        $sync = $this->createSync($db);
+
+        $items = [
+            ['movie' => ['ids' => ['tmdb' => 11, 'imdb' => 'tt1']]],
+            ['movie' => ['ids' => ['tmdb' => 22]]],
+            'junk',
+        ];
+        $out = $this->invokePrivate($sync, 'resolveMediaItemIdsBatch', [$items]);
+
+        $this->assertSame([0 => 'm1', 1 => 'm2', 2 => null], $out);
+        $calls = $db->getCalls();
+        $this->assertCount(1, $calls);
+        $this->assertStringContainsString('IN (?,?)', $calls[0]['sql']);
+        $this->assertSame(['$.tmdb_id', '$.tmdb_id', '11', '22'], $calls[0]['params']);
+    }
+
+    public function testBatchResolveFallsBackToOrLikeThenNextIdType(): void
+    {
+        $db = new TestableConnection();
+        $db->setResults([
+            [],                                                       // tmdb JSON miss
+            [['id' => 'm1', 'metadata_json' => '{"tmdb_id":"11"}']],  // tmdb LIKE hit
+            [],                                                       // imdb JSON miss for item 1
+            [],                                                       // imdb LIKE miss
+        ]);
+        $sync = $this->createSync($db);
+
+        $items = [
+            ['movie' => ['ids' => ['tmdb' => 11]]],
+            ['movie' => ['ids' => ['tmdb' => 22, 'imdb' => 'tt9']]],
+        ];
+        $out = $this->invokePrivate($sync, 'resolveMediaItemIdsBatch', [$items]);
+
+        $this->assertSame([0 => 'm1', 1 => null], $out);
+        $calls = $db->getCalls();
+        $this->assertCount(4, $calls);
+        $this->assertStringContainsString('metadata_json LIKE ? OR metadata_json LIKE ?', $calls[1]['sql']);
+        $this->assertSame(['$.imdb_id', '$.imdb_id', 'tt9'], $calls[2]['params']);
+    }
+
     public function testTitleYearFallbackEscapesLikeWildcardsInTheTitle(): void
     {
         $db = new TestableConnection();

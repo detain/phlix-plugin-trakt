@@ -112,8 +112,8 @@ final class TraktHistorySyncPublicMethodsTest extends TestCase
         $db = new TestableConnection();
         // First item found, second item found (both by tmdb_id)
         $db->setResults([
-            [['id' => 'local-id-123']], // find by tmdb 123
-            [['id' => 'local-id-456']], // find by tmdb 456
+            // one batched JSON pass resolves both tmdb ids
+            [['id' => 'local-id-123', 'ext_id' => '123'], ['id' => 'local-id-456', 'ext_id' => '456']],
         ]);
 
         $watchHistory = $this->getMockBuilder(WatchHistory::class)
@@ -149,7 +149,7 @@ final class TraktHistorySyncPublicMethodsTest extends TestCase
         $api->method('getWatchedHistory')->willReturn($traktHistory);
 
         $db = new TestableConnection();
-        $db->setResults([[['id' => 'local-id-123']]]);
+        $db->setResults([[['id' => 'local-id-123', 'ext_id' => '123']]]);
 
         $watchHistory = $this->getMockBuilder(WatchHistory::class)
             ->onlyMethods(['getForMediaItem', 'updateProgress'])
@@ -193,7 +193,7 @@ final class TraktHistorySyncPublicMethodsTest extends TestCase
         $api->method('getWatchedHistory')->willReturn($traktHistory);
 
         $db = new TestableConnection();
-        $db->setResults([[['id' => 'local-id-123']]]);
+        $db->setResults([[['id' => 'local-id-123', 'ext_id' => '123']]]);
 
         $watchHistory = $this->getMockBuilder(WatchHistory::class)
             ->onlyMethods(['getForMediaItem', 'updateProgress'])
@@ -307,7 +307,7 @@ final class TraktHistorySyncPublicMethodsTest extends TestCase
         $api->method('getWatchedHistory')->willReturn($traktHistory);
 
         $db = new TestableConnection();
-        $db->setResults([[['id' => 'episode-local-id']]]);
+        $db->setResults([[['id' => 'episode-local-id', 'ext_id' => '123']]]);
 
         $watchHistory = $this->getMockBuilder(WatchHistory::class)
             ->onlyMethods(['getForMediaItem', 'updateProgress'])
@@ -497,7 +497,7 @@ final class TraktHistorySyncPublicMethodsTest extends TestCase
 
         $db = new TestableConnection();
         $db->setResults([
-            [['id' => 'local-id-x']], // external-id lookup
+            [['id' => 'local-id-x', 'ext_id' => '123']], // external-id lookup
             [['metadata_json' => '{"duration_seconds":5400}']], // PG-127 sizing read
         ]);
 
@@ -538,7 +538,7 @@ final class TraktHistorySyncPublicMethodsTest extends TestCase
         $api->method('getWatchedHistory')->willReturn($traktHistory);
 
         $db = new TestableConnection();
-        $db->setResults([[['id' => 'local-id-123']]]); // external-id lookup only
+        $db->setResults([[['id' => 'local-id-123', 'ext_id' => '123']]]); // external-id lookup only
 
         $watchHistory = $this->getMockBuilder(WatchHistory::class)
             ->onlyMethods(['getForMediaItem', 'updateProgress'])
@@ -581,7 +581,7 @@ final class TraktHistorySyncPublicMethodsTest extends TestCase
 
         $db = new TestableConnection();
         $db->setResults([
-            [['id' => 'local-id-123']],
+            [['id' => 'local-id-123', 'ext_id' => '123']],
             [['metadata_json' => null]],
         ]);
 

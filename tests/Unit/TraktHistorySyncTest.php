@@ -42,21 +42,24 @@ final class TraktHistorySyncTest extends TestCase
     }
 
     /**
-     * Use reflection to invoke the private findMediaItemId method.
+     * Resolve one entry through the private batch resolver (TRK-10).
      */
     private function invokeFindMediaItemId(TraktHistorySync $sync, array $item): ?string
     {
         $reflection = new \ReflectionClass($sync);
-        $method = $reflection->getMethod('findMediaItemId');
+        $method = $reflection->getMethod('resolveMediaItemIdsBatch');
         $method->setAccessible(true);
 
-        return $method->invoke($sync, $item);
+        /** @var array<array-key, string|null> $out */
+        $out = $method->invoke($sync, [$item]);
+
+        return $out[0];
     }
 
     public function testFindMediaItemIdReturnsIdWhenTmdbIdMatches(): void
     {
         $db = new TraktHistorySyncTestDbDouble();
-        $db->setResults([['id' => 'media-item-uuid-123']]);
+        $db->setResults([[['id' => 'media-item-uuid-123', 'ext_id' => '123']]]);
         $sync = $this->createSync($db);
 
         $item = [
@@ -78,7 +81,7 @@ final class TraktHistorySyncTest extends TestCase
         $this->assertCount(1, $calls);
         // Now uses JSON_EXTRACT for robust JSON querying, fallback to LIKE if needed
         $this->assertStringContainsString('JSON_EXTRACT', $calls[0]['sql']);
-        $this->assertSame(['$.tmdb_id', '123'], $calls[0]['params']);
+        $this->assertSame(['$.tmdb_id', '$.tmdb_id', '123'], $calls[0]['params']);
     }
 
     public function testFindMediaItemIdReturnsNullWhenNoIdsMatch(): void
@@ -123,7 +126,7 @@ final class TraktHistorySyncTest extends TestCase
     public function testFindMediaItemIdTriesTvdbWhenTmdbNotFound(): void
     {
         $db = new TraktHistorySyncTestDbDouble();
-        $db->setResults([[], ['id' => 'tvdb-media-item']]);
+        $db->setResults([[], [], [['id' => 'tvdb-media-item', 'ext_id' => '456']]]);
         $sync = $this->createSync($db);
 
         $item = [
@@ -145,7 +148,7 @@ final class TraktHistorySyncTest extends TestCase
     public function testFindMediaItemIdTriesImdbWhenTmdbAndTvdbNotFound(): void
     {
         $db = new TraktHistorySyncTestDbDouble();
-        $db->setResults([[], ['id' => 'imdb-media-item']]);
+        $db->setResults([[], [], [['id' => 'imdb-media-item', 'ext_id' => 'tt9999999']]]);
         $sync = $this->createSync($db);
 
         $item = [
@@ -174,7 +177,7 @@ final class TraktHistorySyncTest extends TestCase
     public function testInjectedResolvedIdKeyInPayloadIsIgnored(): void
     {
         $db = new TraktHistorySyncTestDbDouble();
-        $db->setResults([['id' => 'db-resolved-item']]);
+        $db->setResults([[['id' => 'db-resolved-item', 'ext_id' => '123']]]);
         $sync = $this->createSync($db);
 
         $item = [
@@ -196,7 +199,7 @@ final class TraktHistorySyncTest extends TestCase
     public function testFindMediaItemIdHandlesEpisodeIds(): void
     {
         $db = new TraktHistorySyncTestDbDouble();
-        $db->setResults([['id' => 'episode-media-item']]);
+        $db->setResults([[['id' => 'episode-media-item', 'ext_id' => '456']]]);
         $sync = $this->createSync($db);
 
         $item = [
@@ -218,7 +221,7 @@ final class TraktHistorySyncTest extends TestCase
     public function testFindMediaItemIdSkipsEmptyExternalId(): void
     {
         $db = new TraktHistorySyncTestDbDouble();
-        $db->setResults([[], ['id' => 'skip-empty']]);
+        $db->setResults([[], [], [['id' => 'skip-empty', 'ext_id' => '456']]]);
         $sync = $this->createSync($db);
 
         $item = [
@@ -801,7 +804,7 @@ final class TraktHistorySyncTest extends TestCase
         ];
 
         $db = new TraktHistorySyncTestDbDouble();
-        $db->setResults([['id' => 'media-uuid-dark-knight']]);
+        $db->setResults([[['id' => 'media-uuid-dark-knight', 'ext_id' => '155']]]);
         $sync = $this->createSync($db);
 
         $this->assertSame(
@@ -811,7 +814,7 @@ final class TraktHistorySyncTest extends TestCase
         );
 
         $db2 = new TraktHistorySyncTestDbDouble();
-        $db2->setResults([['id' => 'media-uuid-pawnee-zoo']]);
+        $db2->setResults([[['id' => 'media-uuid-pawnee-zoo', 'ext_id' => '397629']]]);
         $sync2 = $this->createSync($db2);
 
         $this->assertSame(
