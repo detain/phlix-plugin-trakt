@@ -11,6 +11,7 @@ use Phlix\Plugins\Scrobbler\Trakt\TraktApiException;
 use Phlix\Plugins\Scrobbler\Trakt\TraktAuthenticationException;
 use Phlix\Plugins\Scrobbler\Trakt\TraktHistorySync;
 use Phlix\Plugins\Scrobbler\Trakt\TraktSettings;
+use PHPUnit\Framework\Attributes\AllowMockObjectsWithoutExpectations;
 use PHPUnit\Framework\TestCase;
 use Psr\Log\NullLogger;
 use Workerman\MySQL\Connection;
@@ -20,12 +21,13 @@ use Workerman\MySQL\Connection;
  *
  * Uses reflection to test the private findMediaItemId method with a custom DB double.
  */
+#[AllowMockObjectsWithoutExpectations]
 final class TraktHistorySyncTest extends TestCase
 {
     private function createSync(Connection $db): TraktHistorySync
     {
-        $api = $this->createMock(TraktApi::class);
-        $watchHistory = $this->createMock(WatchHistory::class);
+        $api = $this->createStub(TraktApi::class);
+        $watchHistory = $this->createStub(WatchHistory::class);
         $settings = new TraktSettings(
             accessToken: 'test-access',
             refreshToken: 'test-refresh',
@@ -245,9 +247,9 @@ final class TraktHistorySyncTest extends TestCase
 
     public function testSyncRatingsTraktToPhlixReturnsZeroWhenNotConfigured(): void
     {
-        $api = $this->createMock(TraktApi::class);
+        $api = $this->createStub(TraktApi::class);
         $db = new TraktHistorySyncTestDbDouble();
-        $watchHistory = $this->createMock(WatchHistory::class);
+        $watchHistory = $this->createStub(WatchHistory::class);
         $settings = new TraktSettings(
             accessToken: null,
             refreshToken: null,
@@ -267,9 +269,9 @@ final class TraktHistorySyncTest extends TestCase
 
     public function testSyncRatingsTraktToPhlixReturnsZeroWhenSyncDisabled(): void
     {
-        $api = $this->createMock(TraktApi::class);
+        $api = $this->createStub(TraktApi::class);
         $db = new TraktHistorySyncTestDbDouble();
-        $watchHistory = $this->createMock(WatchHistory::class);
+        $watchHistory = $this->createStub(WatchHistory::class);
         $settings = new TraktSettings(
             accessToken: 'a',
             refreshToken: 'r',
@@ -304,7 +306,7 @@ final class TraktHistorySyncTest extends TestCase
             ['movie' => ['ids' => ['tmdb' => 456], 'title' => 'Movie 2', 'year' => 2023], 'rating' => 9, 'rated_at' => '2024-01-02T00:00:00Z'],
         ];
 
-        $api = $this->createMock(TraktApi::class);
+        $api = $this->createStub(TraktApi::class);
         $api->method('getRatings')->willReturn($ratings);
 
         $db = new TraktHistorySyncTestDbDouble();
@@ -352,9 +354,9 @@ final class TraktHistorySyncTest extends TestCase
 
     public function testSyncRatingsPhlixToTraktReturnsFalseWhenNotConfigured(): void
     {
-        $api = $this->createMock(TraktApi::class);
+        $api = $this->createStub(TraktApi::class);
         $db = new TraktHistorySyncTestDbDouble();
-        $watchHistory = $this->createMock(WatchHistory::class);
+        $watchHistory = $this->createStub(WatchHistory::class);
         $settings = new TraktSettings(
             accessToken: null,
             refreshToken: null,
@@ -374,9 +376,9 @@ final class TraktHistorySyncTest extends TestCase
 
     public function testSyncRatingsPhlixToTraktReturnsFalseWhenSyncDisabled(): void
     {
-        $api = $this->createMock(TraktApi::class);
+        $api = $this->createStub(TraktApi::class);
         $db = new TraktHistorySyncTestDbDouble();
-        $watchHistory = $this->createMock(WatchHistory::class);
+        $watchHistory = $this->createStub(WatchHistory::class);
         $settings = new TraktSettings(
             accessToken: 'a',
             refreshToken: 'r',
@@ -397,9 +399,9 @@ final class TraktHistorySyncTest extends TestCase
 
     public function testSyncRatingsPhlixToTraktReturnsFalseWhenNoLocalHistory(): void
     {
-        $api = $this->createMock(TraktApi::class);
+        $api = $this->createStub(TraktApi::class);
         $db = new TraktHistorySyncTestDbDouble();
-        $watchHistory = $this->createMock(WatchHistory::class);
+        $watchHistory = $this->createStub(WatchHistory::class);
         $watchHistory->method('getForMediaItem')->willReturn(null);
 
         $settings = new TraktSettings(
@@ -426,7 +428,7 @@ final class TraktHistorySyncTest extends TestCase
         $api->expects($this->once())->method('addRating')->willReturn(['added' => true]);
 
         $db = new TraktHistorySyncTestDbDouble();
-        $watchHistory = $this->createMock(WatchHistory::class);
+        $watchHistory = $this->createStub(WatchHistory::class);
         $watchHistory->method('getForMediaItem')->willReturn([
             'media_name' => 'Test Movie',
             'media_type' => 'movie',
@@ -466,7 +468,7 @@ final class TraktHistorySyncTest extends TestCase
             ->willReturn(['added' => true]);
 
         $db = new TraktHistorySyncTestDbDouble();
-        $watchHistory = $this->createMock(WatchHistory::class);
+        $watchHistory = $this->createStub(WatchHistory::class);
         $watchHistory->method('getForMediaItem')->willReturn([
             'media_name' => 'Test Movie',
             'media_type' => 'movie',
@@ -837,7 +839,7 @@ final class TraktHistorySyncTest extends TestCase
      */
     public function testSyncTraktToPhlixRethrowsAuthenticationFailure(): void
     {
-        $api = $this->createMock(TraktApi::class);
+        $api = $this->createStub(TraktApi::class);
         $api->method('getWatchedHistory')->willThrowException(
             new TraktAuthenticationException('Unauthorized', 401),
         );
@@ -865,7 +867,7 @@ final class TraktHistorySyncTest extends TestCase
      */
     public function testSyncTraktToPhlixSwallowsTransientApiFailureAndReturnsZero(): void
     {
-        $api = $this->createMock(TraktApi::class);
+        $api = $this->createStub(TraktApi::class);
         $api->method('getWatchedHistory')->willThrowException(
             new TraktApiException('boom', 500),
         );

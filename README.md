@@ -119,7 +119,7 @@ vendor/bin/phpcs src --standard=PSR12    # CI coding-standards gate
 php scripts/security-audit-check.php     # audit composer.lock (runtime + dev)
 ```
 
-These deterministic gates run in CI on PHP 8.3 and 8.4. The phpstan config
+These deterministic gates run in CI on PHP 8.3, 8.4 and 8.5. The phpstan config
 (`phpstan.neon`) carries ten broad `ignoreErrors` families — every
 "unknown class"/"invalid type" shape, silenced because the host classes they
 refer to are not available in plugin scope. The plugin's own typed code is

@@ -8,6 +8,7 @@ use Phlix\Auth\WatchHistory;
 use Phlix\Plugins\Scrobbler\Trakt\TraktApi;
 use Phlix\Plugins\Scrobbler\Trakt\TraktHistorySync;
 use Phlix\Plugins\Scrobbler\Trakt\TraktSettings;
+use PHPUnit\Framework\Attributes\AllowMockObjectsWithoutExpectations;
 use PHPUnit\Framework\TestCase;
 use Psr\Log\NullLogger;
 use Workerman\MySQL\TestableConnection;
@@ -38,6 +39,7 @@ use Workerman\MySQL\TestableConnection;
  *     writing 0/0 when Trakt supplies no runtime — preserves local progress
  *     instead.
  */
+#[AllowMockObjectsWithoutExpectations]
 final class TraktRatingPullPersistenceTest extends TestCase
 {
     private const PROFILE_ID = 'profile-uuid-1';
@@ -97,7 +99,7 @@ final class TraktRatingPullPersistenceTest extends TestCase
 
     public function testPulledRatingIsPersistedIntoCanonicalUserItemDataColumn(): void
     {
-        $api = $this->createMock(TraktApi::class);
+        $api = $this->createStub(TraktApi::class);
         $api->method('getRatings')->willReturn([$this->ratingEntry(8)]);
 
         $db = new TestableConnection();
@@ -135,7 +137,7 @@ final class TraktRatingPullPersistenceTest extends TestCase
 
     public function testRatingSyncNeverRewritesWatchHistoryOfInProgressItem(): void
     {
-        $api = $this->createMock(TraktApi::class);
+        $api = $this->createStub(TraktApi::class);
         $api->method('getRatings')->willReturn([$this->ratingEntry(9)]);
 
         $db = new TestableConnection();
@@ -174,7 +176,7 @@ final class TraktRatingPullPersistenceTest extends TestCase
 
     public function testUnresolvableProfileOwnerWritesNothingAndIsNotCounted(): void
     {
-        $api = $this->createMock(TraktApi::class);
+        $api = $this->createStub(TraktApi::class);
         $api->method('getRatings')->willReturn([$this->ratingEntry(7)]);
 
         $db = new TestableConnection();
@@ -220,7 +222,7 @@ final class TraktRatingPullPersistenceTest extends TestCase
             // No runtime anywhere — extractDurationTicks() returns 0.
         ]];
 
-        $api = $this->createMock(TraktApi::class);
+        $api = $this->createStub(TraktApi::class);
         $api->method('getWatchedHistory')->willReturn($traktHistory);
 
         $db = new TestableConnection();
@@ -259,7 +261,7 @@ final class TraktRatingPullPersistenceTest extends TestCase
             'runtime' => 120,
         ]];
 
-        $api = $this->createMock(TraktApi::class);
+        $api = $this->createStub(TraktApi::class);
         $api->method('getWatchedHistory')->willReturn($traktHistory);
 
         $db = new TestableConnection();
@@ -298,7 +300,7 @@ final class TraktRatingPullPersistenceTest extends TestCase
      */
     public function testFailedDriverWriteIsNotCountedAsPersisted(): void
     {
-        $api = $this->createMock(TraktApi::class);
+        $api = $this->createStub(TraktApi::class);
         $api->method('getRatings')->willReturn([$this->ratingEntry(6)]);
 
         $db = new TestableConnection();

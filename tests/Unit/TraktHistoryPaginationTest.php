@@ -8,6 +8,7 @@ use Phlix\Auth\WatchHistory;
 use Phlix\Plugins\Scrobbler\Trakt\TraktApi;
 use Phlix\Plugins\Scrobbler\Trakt\TraktHistorySync;
 use Phlix\Plugins\Scrobbler\Trakt\TraktSettings;
+use PHPUnit\Framework\Attributes\AllowMockObjectsWithoutExpectations;
 use PHPUnit\Framework\TestCase;
 use Psr\Log\NullLogger;
 use Workerman\MySQL\Connection;
@@ -26,6 +27,7 @@ use Workerman\MySQL\Connection;
  * These assertions check the OBSERVABLE EFFECT — how many pages are actually
  * requested and how many items come back — not that a pagination helper exists.
  */
+#[AllowMockObjectsWithoutExpectations]
 final class TraktHistoryPaginationTest extends TestCase
 {
     /**
@@ -33,7 +35,7 @@ final class TraktHistoryPaginationTest extends TestCase
      */
     private function syncWithPages(array $pages, ?TraktApi &$api = null): TraktHistorySync
     {
-        $api = $this->createMock(TraktApi::class);
+        $api = $this->createStub(TraktApi::class);
 
         $calls = 0;
         $api->method('getWatchedHistory')->willReturnCallback(
@@ -136,7 +138,7 @@ final class TraktHistoryPaginationTest extends TestCase
      */
     public function test_pager_is_bounded_when_the_api_never_returns_a_short_page(): void
     {
-        $api = $this->createMock(TraktApi::class);
+        $api = $this->createStub(TraktApi::class);
         $api->method('getWatchedHistory')->willReturnCallback(
             fn (): array => $this->fullPage()   // always full: never signals the end
         );
@@ -176,7 +178,7 @@ final class TraktHistoryPaginationTest extends TestCase
      */
     private function syncWithRatingPages(array $pages, int &$calls = 0): TraktHistorySync
     {
-        $api = $this->createMock(TraktApi::class);
+        $api = $this->createStub(TraktApi::class);
         $api->method('getRatings')->willReturnCallback(
             /** @param mixed ...$args (username, token, type, page, limit) */
             function (mixed ...$args) use ($pages, &$calls): array {
@@ -248,7 +250,7 @@ final class TraktHistoryPaginationTest extends TestCase
         $size = $ref->getConstant('HISTORY_PAGE_SIZE');
 
         // An always-full stub never signals the end; only the cap may stop it.
-        $api = $this->createMock(TraktApi::class);
+        $api = $this->createStub(TraktApi::class);
         $api->method('getRatings')->willReturnCallback(fn (): array => $this->fullPage());
         $sync = new TraktHistorySync(
             $api,

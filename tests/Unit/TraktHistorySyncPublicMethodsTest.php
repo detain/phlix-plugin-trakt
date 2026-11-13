@@ -8,6 +8,7 @@ use Phlix\Auth\WatchHistory;
 use Phlix\Plugins\Scrobbler\Trakt\TraktApi;
 use Phlix\Plugins\Scrobbler\Trakt\TraktHistorySync;
 use Phlix\Plugins\Scrobbler\Trakt\TraktSettings;
+use PHPUnit\Framework\Attributes\AllowMockObjectsWithoutExpectations;
 use PHPUnit\Framework\TestCase;
 use Psr\Log\NullLogger;
 use Workerman\MySQL\Connection;
@@ -16,6 +17,7 @@ use Workerman\MySQL\TestableConnection;
 /**
  * Tests for TraktHistorySync public sync methods: syncTraktToPhlix and syncPhlixToTrakt.
  */
+#[AllowMockObjectsWithoutExpectations]
 final class TraktHistorySyncPublicMethodsTest extends TestCase
 {
     private function createSync(
@@ -74,7 +76,7 @@ final class TraktHistorySyncPublicMethodsTest extends TestCase
 
     public function testSyncTraktToPhlixReturnsZeroWhenApiThrowsException(): void
     {
-        $api = $this->createMock(TraktApi::class);
+        $api = $this->createStub(TraktApi::class);
         $api->method('getWatchedHistory')
             ->willThrowException(new \Phlix\Plugins\Scrobbler\Trakt\TraktApiException('API error'));
 
@@ -105,7 +107,7 @@ final class TraktHistorySyncPublicMethodsTest extends TestCase
             ],
         ];
 
-        $api = $this->createMock(TraktApi::class);
+        $api = $this->createStub(TraktApi::class);
         $api->method('getWatchedHistory')
             ->willReturn($traktHistory);
 
@@ -145,7 +147,7 @@ final class TraktHistorySyncPublicMethodsTest extends TestCase
             ],
         ];
 
-        $api = $this->createMock(TraktApi::class);
+        $api = $this->createStub(TraktApi::class);
         $api->method('getWatchedHistory')->willReturn($traktHistory);
 
         $db = new TestableConnection();
@@ -189,7 +191,7 @@ final class TraktHistorySyncPublicMethodsTest extends TestCase
             ],
         ];
 
-        $api = $this->createMock(TraktApi::class);
+        $api = $this->createStub(TraktApi::class);
         $api->method('getWatchedHistory')->willReturn($traktHistory);
 
         $db = new TestableConnection();
@@ -221,7 +223,7 @@ final class TraktHistorySyncPublicMethodsTest extends TestCase
         $api = $this->createMock(TraktApi::class);
         $api->expects($this->never())->method('addToHistory');
 
-        $watchHistory = $this->createMock(WatchHistory::class);
+        $watchHistory = $this->createStub(WatchHistory::class);
         $watchHistory->method('getForMediaItem')->willReturn([
             'media_name' => 'Corrupt Row Movie',
             'media_type' => 'movie',
@@ -247,7 +249,7 @@ final class TraktHistorySyncPublicMethodsTest extends TestCase
             ->method('addToHistory')
             ->willReturn(['added' => ['movies' => 1]]);
 
-        $watchHistory = $this->createMock(WatchHistory::class);
+        $watchHistory = $this->createStub(WatchHistory::class);
         $watchHistory->method('getForMediaItem')->willReturn([
             'media_name' => 'String Percent Movie',
             'media_type' => 'movie',
@@ -272,7 +274,7 @@ final class TraktHistorySyncPublicMethodsTest extends TestCase
             ],
         ];
 
-        $api = $this->createMock(TraktApi::class);
+        $api = $this->createStub(TraktApi::class);
         $api->method('getWatchedHistory')->willReturn($traktHistory);
 
         $db = new TestableConnection();
@@ -303,7 +305,7 @@ final class TraktHistorySyncPublicMethodsTest extends TestCase
             ],
         ];
 
-        $api = $this->createMock(TraktApi::class);
+        $api = $this->createStub(TraktApi::class);
         $api->method('getWatchedHistory')->willReturn($traktHistory);
 
         $db = new TestableConnection();
@@ -359,7 +361,7 @@ final class TraktHistorySyncPublicMethodsTest extends TestCase
 
     public function testSyncPhlixToTraktReturnsFalseWhenNoLocalHistory(): void
     {
-        $watchHistory = $this->createMock(WatchHistory::class);
+        $watchHistory = $this->createStub(WatchHistory::class);
         $watchHistory->method('getForMediaItem')->willReturn(null);
 
         $sync = $this->createSync(watchHistory: $watchHistory);
@@ -371,7 +373,7 @@ final class TraktHistorySyncPublicMethodsTest extends TestCase
 
     public function testSyncPhlixToTraktReturnsFalseWhenBelow90Percent(): void
     {
-        $watchHistory = $this->createMock(WatchHistory::class);
+        $watchHistory = $this->createStub(WatchHistory::class);
         $watchHistory->method('getForMediaItem')
             ->willReturn(['progress_percent' => 50.0]);
 
@@ -389,7 +391,7 @@ final class TraktHistorySyncPublicMethodsTest extends TestCase
             ->method('addToHistory')
             ->willReturn(['added' => ['movies' => 1]]);
 
-        $watchHistory = $this->createMock(WatchHistory::class);
+        $watchHistory = $this->createStub(WatchHistory::class);
         $watchHistory->method('getForMediaItem')
             ->willReturn([
                 'media_name' => 'Test Movie',
@@ -407,11 +409,11 @@ final class TraktHistorySyncPublicMethodsTest extends TestCase
 
     public function testSyncPhlixToTraktReturnsFalseWhenApiThrows(): void
     {
-        $api = $this->createMock(TraktApi::class);
+        $api = $this->createStub(TraktApi::class);
         $api->method('addToHistory')
             ->willThrowException(new \Phlix\Plugins\Scrobbler\Trakt\TraktApiException('API error'));
 
-        $watchHistory = $this->createMock(WatchHistory::class);
+        $watchHistory = $this->createStub(WatchHistory::class);
         $watchHistory->method('getForMediaItem')
             ->willReturn([
                 'media_name' => 'Test Movie',
@@ -434,7 +436,7 @@ final class TraktHistorySyncPublicMethodsTest extends TestCase
             ->method('addToHistory')
             ->willReturn(['added' => ['movies' => 1]]);
 
-        $watchHistory = $this->createMock(WatchHistory::class);
+        $watchHistory = $this->createStub(WatchHistory::class);
         $watchHistory->method('getForMediaItem')
             ->willReturn([
                 'media_name' => 'My Custom Movie',
@@ -459,10 +461,10 @@ final class TraktHistorySyncPublicMethodsTest extends TestCase
      */
     public function testSyncPhlixToTraktReturnsFalseWhenHistoryPushIsSkipped(): void
     {
-        $api = $this->createMock(TraktApi::class);
+        $api = $this->createStub(TraktApi::class);
         $api->method('addToHistory')->willReturn(['added' => false, 'skipped' => true]);
 
-        $watchHistory = $this->createMock(WatchHistory::class);
+        $watchHistory = $this->createStub(WatchHistory::class);
         $watchHistory->method('getForMediaItem')->willReturn([
             'media_name' => 'No Ids Movie',
             'media_type' => 'movie',
@@ -492,7 +494,7 @@ final class TraktHistorySyncPublicMethodsTest extends TestCase
             ],
         ];
 
-        $api = $this->createMock(TraktApi::class);
+        $api = $this->createStub(TraktApi::class);
         $api->method('getWatchedHistory')->willReturn($traktHistory);
 
         $db = new TestableConnection();
@@ -534,7 +536,7 @@ final class TraktHistorySyncPublicMethodsTest extends TestCase
             ],
         ];
 
-        $api = $this->createMock(TraktApi::class);
+        $api = $this->createStub(TraktApi::class);
         $api->method('getWatchedHistory')->willReturn($traktHistory);
 
         $db = new TestableConnection();
@@ -576,7 +578,7 @@ final class TraktHistorySyncPublicMethodsTest extends TestCase
             ],
         ];
 
-        $api = $this->createMock(TraktApi::class);
+        $api = $this->createStub(TraktApi::class);
         $api->method('getWatchedHistory')->willReturn($traktHistory);
 
         $db = new TestableConnection();
@@ -608,12 +610,12 @@ final class TraktHistorySyncPublicMethodsTest extends TestCase
      */
     public function testSyncPhlixToTraktRethrowsAuthenticationFailure(): void
     {
-        $api = $this->createMock(TraktApi::class);
+        $api = $this->createStub(TraktApi::class);
         $api->method('addToHistory')->willThrowException(
             new \Phlix\Plugins\Scrobbler\Trakt\TraktAuthenticationException('Expired token', 401)
         );
 
-        $watchHistory = $this->createMock(WatchHistory::class);
+        $watchHistory = $this->createStub(WatchHistory::class);
         $watchHistory->method('getForMediaItem')->willReturn([
             'media_name' => 'Test Movie',
             'media_type' => 'movie',
@@ -629,12 +631,12 @@ final class TraktHistorySyncPublicMethodsTest extends TestCase
 
     public function testSyncRatingsPhlixToTraktRethrowsAuthenticationFailure(): void
     {
-        $api = $this->createMock(TraktApi::class);
+        $api = $this->createStub(TraktApi::class);
         $api->method('addRating')->willThrowException(
             new \Phlix\Plugins\Scrobbler\Trakt\TraktAuthenticationException('Expired token', 401)
         );
 
-        $watchHistory = $this->createMock(WatchHistory::class);
+        $watchHistory = $this->createStub(WatchHistory::class);
         $watchHistory->method('getForMediaItem')->willReturn([
             'media_name' => 'Test Movie',
             'media_type' => 'movie',
@@ -656,7 +658,7 @@ final class TraktHistorySyncPublicMethodsTest extends TestCase
      */
     public function testSyncRatingsTraktToPhlixRethrowsAuthenticationFailure(): void
     {
-        $api = $this->createMock(TraktApi::class);
+        $api = $this->createStub(TraktApi::class);
         $api->method('getRatings')->willThrowException(
             new \Phlix\Plugins\Scrobbler\Trakt\TraktAuthenticationException('Expired token', 401)
         );
@@ -682,7 +684,7 @@ final class TraktHistorySyncPublicMethodsTest extends TestCase
             ->method('addToHistory')
             ->willReturn(['added' => ['movies' => 1]]);
 
-        $watchHistory = $this->createMock(WatchHistory::class);
+        $watchHistory = $this->createStub(WatchHistory::class);
         $watchHistory->method('getForMediaItem')->willReturn([
             'media_name' => 'Test Movie',
             'media_type' => 'movie',

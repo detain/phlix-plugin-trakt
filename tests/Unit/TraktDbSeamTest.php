@@ -8,6 +8,7 @@ use Phlix\Auth\WatchHistory;
 use Phlix\Plugins\Scrobbler\Trakt\TraktApi;
 use Phlix\Plugins\Scrobbler\Trakt\TraktHistorySync;
 use Phlix\Plugins\Scrobbler\Trakt\TraktSettings;
+use PHPUnit\Framework\Attributes\AllowMockObjectsWithoutExpectations;
 use PHPUnit\Framework\TestCase;
 use Psr\Log\NullLogger;
 use Workerman\MySQL\TestableConnection;
@@ -31,6 +32,7 @@ use Workerman\MySQL\TestableConnection;
  *     pattern (review trakt__secaudit m7: remote titles carrying %/_ could
  *     otherwise broaden the fuzzy match and bind the wrong local item).
  */
+#[AllowMockObjectsWithoutExpectations]
 final class TraktDbSeamTest extends TestCase
 {
     /**

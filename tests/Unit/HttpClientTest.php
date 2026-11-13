@@ -9,6 +9,7 @@ use Phlix\Plugins\Scrobbler\Trakt\RemoteText;
 use Phlix\Plugins\Scrobbler\Trakt\TraktApiException;
 use Phlix\Plugins\Scrobbler\Trakt\TraktAuthenticationException;
 use Phlix\Plugins\Scrobbler\Trakt\TraktRateLimitException;
+use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\TestCase;
 
 /**
@@ -65,9 +66,8 @@ final class HttpClientTest extends TestCase
      * 502 as a 422 (or vice versa) hides an API contract failure from the
      * operator. Several statuses are checked so that a hardcoded literal in
      * place of `'HTTP ' . $httpCode` cannot satisfy the whole set.
-     *
-     * @dataProvider errorStatusProvider
      */
+    #[DataProvider('errorStatusProvider')]
     public function testErrorStatusIsReportedVerbatimInMessageAndCode(int $status): void
     {
         try {
@@ -111,9 +111,8 @@ final class HttpClientTest extends TestCase
      * NOT become authentication failures, or widening that comparison would go
      * unnoticed. TraktAuthenticationException extends TraktApiException, so the
      * negative has to be asserted explicitly.
-     *
-     * @dataProvider nonAuthStatusProvider
      */
+    #[DataProvider('nonAuthStatusProvider')]
     public function testNeighbouringStatusesAreNotAuthenticationFailures(int $status): void
     {
         try {

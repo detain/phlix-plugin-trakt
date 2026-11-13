@@ -2028,7 +2028,7 @@ final class TraktPluginTest extends TestCase
         $plugin->configure(array_merge($settings->toArray(), ['enabled' => true]));
 
         $ref = new \ReflectionClass($plugin);
-        $watchHistory = $this->createMock(\Phlix\Auth\WatchHistory::class);
+        $watchHistory = $this->createStub(\Phlix\Auth\WatchHistory::class);
         $watchHistory->method('getForMediaItem')->willReturn([
             'media_name' => 'Test Movie',
             'media_type' => 'movie',
