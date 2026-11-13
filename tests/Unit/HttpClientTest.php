@@ -102,7 +102,7 @@ final class HttpClientTest extends TestCase
             $this->fail('Expected TraktAuthenticationException for HTTP 401');
         } catch (TraktApiException $e) {
             $this->assertInstanceOf(TraktAuthenticationException::class, $e);
-            $this->assertSame('Unauthorized - token invalid or expired', $e->getMessage());
+            $this->assertSame('Trakt rejected the access token (invalid or expired)', $e->getMessage());
         }
     }
 

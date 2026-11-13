@@ -177,7 +177,7 @@ final class HttpClientAsyncTest extends TestCase
         ];
 
         $this->expectException(TraktApiException::class);
-        $this->expectExceptionMessageMatches('/Refusing Trakt response body over \d+ bytes/');
+        $this->expectExceptionMessageMatches('/Refusing Trakt response body larger than the 4 MiB ceiling \(4194304 bytes\)/');
 
         (new HttpClient(timeout: 1))->get('https://api.trakt.tv/users/me');
     }

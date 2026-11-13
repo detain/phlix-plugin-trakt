@@ -458,7 +458,7 @@ class HttpClient implements HttpClientInterface
     private function parseResponse(int $httpCode, string $raw, array $headers = []): array
     {
         if ($httpCode === 401) {
-            throw new TraktAuthenticationException('Unauthorized - token invalid or expired');
+            throw new TraktAuthenticationException('Trakt rejected the access token (invalid or expired)');
         }
 
         if ($httpCode === 429) {
@@ -556,7 +556,9 @@ class HttpClient implements HttpClientInterface
      */
     private static function oversizedBodyMessage(): string
     {
-        return 'Refusing Trakt response body over ' . self::MAX_RESPONSE_BYTES . ' bytes';
+        return 'Refusing Trakt response body larger than the '
+            . (self::MAX_RESPONSE_BYTES / 1048576) . ' MiB ceiling ('
+            . self::MAX_RESPONSE_BYTES . ' bytes)';
     }
 
     /**
