@@ -20,6 +20,63 @@ use Psr\Log\NullLogger;
  */
 final class TraktPluginOnEnableCoverageTest extends TestCase
 {
+    /**
+     * TRK-1 regression pin: the lazy self-wire inside syncHistoryFromTrakt()
+     * on a transient instance must NOT arm a persistent timer (arming is
+     * host-lifecycle-only, via onEnable()).
+     */
+    public function testLazySelfWireInSyncHistoryRecordsZeroArms(): void
+    {
+        \Workerman\Timer::reset();
+        $settings = new TraktSettings(
+            accessToken: 'test-access',
+            refreshToken: 'test-refresh',
+            username: 'testuser',
+            syncEnabled: true,
+        );
+        $plugin = new TraktPlugin($settings, new NullLogger());
+        $enabled = new \ReflectionProperty(TraktPlugin::class, 'enabled');
+        $enabled->setAccessible(true);
+        $enabled->setValue($plugin, true);
+        $container = new StubContainerWithAdd([
+            \Phlix\Media\Library\ItemRepository::class => new FakeItemRepositoryForCoverageTest(),
+            \Phlix\Auth\WatchHistory::class => null,
+            \Workerman\MySQL\Connection::class => new FakeDbConnection(),
+        ]);
+
+        $plugin->syncHistoryFromTrakt($container);
+
+        $this->assertSame([], \Workerman\Timer::$arms, 'lazy wire must not arm timers');
+    }
+
+    /**
+     * Companion: the host-lifecycle onEnable() still arms the periodic timer.
+     */
+    public function testOnEnableStillArmsPeriodicTimer(): void
+    {
+        \Workerman\Timer::reset();
+        $settings = new TraktSettings(
+            accessToken: 'test-access',
+            refreshToken: 'test-refresh',
+            username: 'testuser',
+            syncEnabled: true,
+        );
+        $plugin = new TraktPlugin($settings, new NullLogger());
+        $enabled = new \ReflectionProperty(TraktPlugin::class, 'enabled');
+        $enabled->setAccessible(true);
+        $enabled->setValue($plugin, true);
+        $container = new StubContainerWithAdd([
+            \Phlix\Media\Library\ItemRepository::class => new FakeItemRepositoryForCoverageTest(),
+            \Phlix\Auth\WatchHistory::class => null,
+            \Workerman\MySQL\Connection::class => new FakeDbConnection(),
+        ]);
+
+        $plugin->onEnable($container);
+
+        $this->assertCount(1, \Workerman\Timer::$arms);
+        $this->assertTrue(\Workerman\Timer::$arms[0]['persistent']);
+    }
+
     public function testOnEnableWithDbConnectionThrows(): void
     {
         $settings = new TraktSettings(

@@ -271,7 +271,7 @@ final class DbTraktOAuthStateStore implements TraktOAuthStateStore
         try {
             $this->db->rollBackTrans();
         } catch (\Throwable $e) {
-            $this->logger->warning('Trakt OAuth state store rollback failed; the consume transaction may dangle', [
+            $this->logger->warning('Trakt OAuth state store: rollback failed; the consume transaction may dangle', [
                 'error' => $e->getMessage(),
             ]);
         }

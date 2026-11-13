@@ -293,6 +293,28 @@ class TraktPlugin implements LifecycleInterface, ConfigurableInterface
      */
     public function onEnable(ContainerInterface $container): void
     {
+        $this->wireServices($container);
+
+        // WIRE: arm the periodic Trakt→Phlix history sync timer. This only
+        // schedules the tick; the CONNECT work (token refresh + HTTP pull) runs
+        // later, inside runScheduledSync(), never here at boot. Arming is
+        // host-lifecycle-only: the lazy self-wire in syncHistoryFromTrakt()
+        // uses wireServices() and never reaches this line (TRK-1).
+        $this->schedulePeriodicSync($container);
+    }
+
+    /**
+     * Hydrate-only half of onEnable(): resolve host services, re-hydrate
+     * settings with the cipher and build the API client. Arms NO timer, so a
+     * transient per-tick instance can wire itself without leaking a
+     * persistent periodic arm.
+     *
+     * @param ContainerInterface $container Host PSR-11 container
+     *
+     * @return void
+     */
+    private function wireServices(ContainerInterface $container): void
+    {
         // --- WIRE: resolve host services (object lookups; no network/DB I/O) ---
         // TRK-18: every host-service lookup is guarded uniformly — a sparse
         // container degrades to a warning, onEnable never throws.
@@ -370,11 +392,6 @@ class TraktPlugin implements LifecycleInterface, ConfigurableInterface
 
         // WIRE: construct the API client only (no auth exchange, no request).
         $this->initApi();
-
-        // WIRE: arm the periodic Trakt→Phlix history sync timer. This only
-        // schedules the tick; the CONNECT work (token refresh + HTTP pull) runs
-        // later, inside runScheduledSync(), never here at boot.
-        $this->schedulePeriodicSync($container);
     }
 
     /**
@@ -500,9 +517,9 @@ class TraktPlugin implements LifecycleInterface, ConfigurableInterface
      * The resident server resolves a fresh entry instance each tick which
      * applies the persisted settings but does NOT call {@see self::onEnable()},
      * so this method wires its runtime collaborators itself (idempotently) when
-     * they are missing. onEnable() only resolves container services + builds the
-     * (boot-safe, no-I/O) API client and arms the timer, so it is safe to call
-     * here on the sync cadence — it performs NO blocking network/token work.
+     * they are missing via the hydrate-only wireServices() (no timer arm). It
+     * only resolves container services + builds the (boot-safe, no-I/O) API
+     * client, so it is safe to call here on the sync cadence — it performs NO blocking network/token work.
      *
      * @param \Psr\Container\ContainerInterface $container Host container for
      *     collaborator lookup.
@@ -521,7 +538,7 @@ class TraktPlugin implements LifecycleInterface, ConfigurableInterface
         string $profileId = self::DEFAULT_PROFILE_ID,
     ): int {
         if ($this->api === null || $this->watchHistory === null || $this->db === null) {
-            $this->onEnable($container);
+            $this->wireServices($container);
         }
 
         if (!$this->isConfigured() || !$this->settings->syncEnabled) {
