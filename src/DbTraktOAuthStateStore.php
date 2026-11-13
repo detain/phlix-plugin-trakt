@@ -249,12 +249,12 @@ final class DbTraktOAuthStateStore implements TraktOAuthStateStore
             // rolled back UNGUARDED inside this catch).
             $this->safeRollback();
             $this->logger->error(
-                'Trakt OAuth state store unavailable during consume; the state could not be adjudicated',
+                'Trakt OAuth state store: unavailable during consume; the state could not be adjudicated',
                 ['error' => $e->getMessage()],
             );
 
             throw new OAuthStateStoreUnavailableException(
-                'Trakt OAuth state store unavailable during consume: ' . $e->getMessage(),
+                'Trakt OAuth state store: unavailable during consume: ' . $e->getMessage(),
                 previous: $e,
             );
         }
@@ -300,10 +300,12 @@ final class DbTraktOAuthStateStore implements TraktOAuthStateStore
             );
 
             if ($result === false) {
-                $this->logger->warning('Trakt OAuth state cleanup DELETE failed; expired Trakt rows may accumulate');
+                $this->logger->warning(
+                    'Trakt OAuth state store: cleanup DELETE failed; expired Trakt rows may accumulate'
+                );
             }
         } catch (\Throwable $e) {
-            $this->logger->warning('Trakt OAuth state cleanup raised; expired Trakt rows may accumulate', [
+            $this->logger->warning('Trakt OAuth state store: cleanup raised; expired Trakt rows may accumulate', [
                 'error' => $e->getMessage(),
             ]);
         }

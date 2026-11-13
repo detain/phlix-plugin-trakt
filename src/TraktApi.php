@@ -396,7 +396,7 @@ class TraktApi
         $media = $this->buildMediaIds($item);
 
         if ($media === null) {
-            $this->logger->debug('Trakt: scrobble skipped: no external ID available', [
+            $this->logger->debug('Trakt API: scrobble skipped: no external ID available', [
                 'action' => $action,
                 'item' => $item->name,
             ]);
@@ -420,7 +420,7 @@ class TraktApi
             $this->apiHeaders($accessToken)
         );
 
-        $this->logger->debug('Trakt: scrobble response', [
+        $this->logger->debug('Trakt API: scrobble response', [
             'action' => $action,
             'item' => $item->name,
             'response' => $response,
@@ -488,7 +488,7 @@ class TraktApi
             $this->apiHeaders($accessToken)
         );
 
-        $this->logger->debug('Trakt: watched history response', [
+        $this->logger->debug('Trakt API: watched history response', [
             'username' => $username,
             'page' => $page,
             'count' => count($response),
@@ -523,7 +523,7 @@ class TraktApi
         $media = $this->buildMediaIds($item);
 
         if ($media === null) {
-            $this->logger->debug('Trakt: add to history skipped: no external ID available', [
+            $this->logger->debug('Trakt API: add to history skipped: no external ID available', [
                 'item' => $item->name,
             ]);
             return [
@@ -547,7 +547,7 @@ class TraktApi
             $this->apiHeaders($accessToken)
         );
 
-        $this->logger->debug('Trakt: add to history response', [
+        $this->logger->debug('Trakt API: add to history response', [
             'item' => $item->name,
             'watched_at' => $watchedAt->format('c'),
             'response' => $response,
@@ -600,7 +600,7 @@ class TraktApi
             $this->apiHeaders($accessToken)
         );
 
-        $this->logger->debug('Trakt: ratings response', [
+        $this->logger->debug('Trakt API: ratings response', [
             'username' => $username,
             'type' => $type,
             'count' => count($response),
@@ -628,7 +628,7 @@ class TraktApi
         $media = $this->buildMediaIds($item);
 
         if ($media === null) {
-            $this->logger->debug('Trakt: rating skipped: no external ID available', [
+            $this->logger->debug('Trakt API: rating skipped: no external ID available', [
                 'item' => $item->name,
             ]);
             return [
@@ -646,7 +646,7 @@ class TraktApi
             $this->apiHeaders($accessToken)
         );
 
-        $this->logger->debug('Trakt: add rating response', [
+        $this->logger->debug('Trakt API: add rating response', [
             'item' => $item->name,
             'rating' => $rating,
             'response' => $response,
@@ -672,7 +672,7 @@ class TraktApi
         $media = $this->buildMediaIds($item);
 
         if ($media === null) {
-            $this->logger->debug('Trakt: rating removal skipped: no external ID available', [
+            $this->logger->debug('Trakt API: rating removal skipped: no external ID available', [
                 'item' => $item->name,
             ]);
             return [
@@ -695,7 +695,7 @@ class TraktApi
             $this->apiHeaders($accessToken)
         );
 
-        $this->logger->debug('Trakt: remove rating response', [
+        $this->logger->debug('Trakt API: remove rating response', [
             'item' => $item->name,
             'response' => $response,
         ]);

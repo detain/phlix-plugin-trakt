@@ -116,7 +116,7 @@ class TraktHistorySync
         // Only reachable by hitting the page cap, which means the stream is
         // larger than we are willing to pull in one pass. Say so — a silently
         // truncated import is the defect this pager exists to fix.
-        $this->logger->warning('TraktHistorySync: hit the page cap; ' . $what . ' may be incomplete', [
+        $this->logger->warning('Trakt history sync: hit the page cap; ' . $what . ' may be incomplete', [
             'pages_fetched' => self::HISTORY_MAX_PAGES,
             'items_fetched' => count($all),
         ]);
@@ -201,12 +201,12 @@ class TraktHistorySync
     public function syncTraktToPhlix(string $profileId): int
     {
         if (!$this->settings->isConfigured()) {
-            $this->logger->debug('TraktHistorySync: plugin not configured, skipping Trakt→Phlix');
+            $this->logger->debug('Trakt history sync: plugin not configured, skipping Trakt→Phlix');
             return 0;
         }
 
         if (!$this->settings->syncEnabled) {
-            $this->logger->debug('TraktHistorySync: sync disabled, skipping Trakt→Phlix');
+            $this->logger->debug('Trakt history sync: sync disabled, skipping Trakt→Phlix');
             return 0;
         }
 
@@ -220,7 +220,7 @@ class TraktHistorySync
             // (review trakt__secaudit Major-2 / trakt__srphp M6).
             throw $e;
         } catch (TraktApiException $e) {
-            $this->logger->warning('TraktHistorySync: failed to fetch Trakt history', [
+            $this->logger->warning('Trakt history sync: failed to fetch Trakt history', [
                 'error' => $e->getMessage(),
             ]);
             return 0;
@@ -257,7 +257,7 @@ class TraktHistorySync
                 : $this->parseProgressPercent($existing['progress_percent'] ?? null);
 
             if ($existingProgress !== null && $existingProgress >= WatchHistory::COMPLETED_THRESHOLD) {
-                $this->logger->debug('TraktHistorySync: item already at 90%+, skipping', [
+                $this->logger->debug('Trakt history sync: item already at 90%+, skipping', [
                     'media_item_id' => $mediaItemId,
                     'progress' => $existingProgress,
                 ]);
@@ -288,7 +288,7 @@ class TraktHistorySync
                 // rating-pull defect (review trakt__srphp C2). Preserving
                 // local state is the only non-destructive option.
                 $this->logger->warning(
-                    'TraktHistorySync: no Trakt or local duration; skipping write to preserve local progress',
+                    'Trakt history sync: no Trakt or local duration; skipping write to preserve local progress',
                     ['media_item_id' => $mediaItemId]
                 );
                 continue;
@@ -303,13 +303,13 @@ class TraktHistorySync
             );
 
             $written++;
-            $this->logger->debug('TraktHistorySync: wrote entry from Trakt', [
+            $this->logger->debug('Trakt history sync: wrote entry from Trakt', [
                 'media_item_id' => $mediaItemId,
                 'watched_at' => $watchedAt->format('c'),
             ]);
         }
 
-        $this->logger->info('TraktHistorySync: completed Trakt→Phlix sync', [
+        $this->logger->info('Trakt history sync: completed Trakt→Phlix sync', [
             'profile_id' => $profileId,
             'items_written' => $written,
         ]);
@@ -345,12 +345,12 @@ class TraktHistorySync
         ?int $durationTicks
     ): bool {
         if (!$this->settings->isConfigured()) {
-            $this->logger->debug('TraktHistorySync: plugin not configured, skipping Phlix→Trakt');
+            $this->logger->debug('Trakt history sync: plugin not configured, skipping Phlix→Trakt');
             return false;
         }
 
         if (!$this->settings->syncEnabled) {
-            $this->logger->debug('TraktHistorySync: sync disabled, skipping Phlix→Trakt');
+            $this->logger->debug('Trakt history sync: sync disabled, skipping Phlix→Trakt');
             return false;
         }
 
@@ -362,7 +362,7 @@ class TraktHistorySync
             ? null
             : $this->parseProgressPercent($existing['progress_percent'] ?? null);
         if ($existingProgress === null || $existingProgress < WatchHistory::COMPLETED_THRESHOLD) {
-            $this->logger->debug('TraktHistorySync: item below 90%, skipping Phlix→Trakt', [
+            $this->logger->debug('Trakt history sync: item below 90%, skipping Phlix→Trakt', [
                 'media_item_id' => $mediaItemId,
                 'progress' => $existingProgress ?? 0,
             ]);
@@ -380,13 +380,13 @@ class TraktHistorySync
                 // parent this path was a doomed POST that 400'd into the
                 // exception arm below (also false) — the cheap skip keeps the
                 // observable truth: a skipped push is NOT a successful one.
-                $this->logger->debug('TraktHistorySync: Phlix→Trakt push skipped (no external ID)', [
+                $this->logger->debug('Trakt history sync: Phlix→Trakt push skipped (no external ID)', [
                     'media_item_id' => $mediaItemId,
                 ]);
                 return false;
             }
 
-            $this->logger->info('TraktHistorySync: pushed to Trakt', [
+            $this->logger->info('Trakt history sync: pushed to Trakt', [
                 'media_item_id' => $mediaItemId,
             ]);
 
@@ -399,7 +399,7 @@ class TraktHistorySync
             // push death (review trakt__secaudit #1 / trakt__srphp #12).
             throw $e;
         } catch (TraktApiException $e) {
-            $this->logger->warning('TraktHistorySync: failed to push to Trakt', [
+            $this->logger->warning('Trakt history sync: failed to push to Trakt', [
                 'media_item_id' => $mediaItemId,
                 'error' => $e->getMessage(),
             ]);
@@ -424,7 +424,7 @@ class TraktHistorySync
         try {
             return new \DateTimeImmutable($lastWatchedAt);
         } catch (\Exception $e) {
-            $this->logger->warning('TraktHistorySync: failed to parse last_watched_at; using current time', [
+            $this->logger->warning('Trakt history sync: failed to parse last_watched_at; using current time', [
                 'value' => $lastWatchedAt,
                 'error' => $e->getMessage(),
             ]);
@@ -647,7 +647,7 @@ class TraktHistorySync
 
         $mediaItemId = $this->parseIdColumnFromQueryResult($result);
         if ($mediaItemId !== null) {
-            $this->logger->debug('TraktHistorySync: resolved media item via title/year fallback', [
+            $this->logger->debug('Trakt history sync: resolved media item via title/year fallback', [
                 'title' => $title,
                 'year' => $year,
                 'type' => $type,
@@ -692,7 +692,7 @@ class TraktHistorySync
             try {
                 return new \DateTimeImmutable($watchedAt);
             } catch (\Exception $e) {
-                $this->logger->warning('TraktHistorySync: failed to parse watched_at timestamp', [
+                $this->logger->warning('Trakt history sync: failed to parse watched_at timestamp', [
                     'watched_at' => $watchedAt,
                     'error' => $e->getMessage(),
                 ]);
@@ -857,12 +857,12 @@ class TraktHistorySync
     public function syncRatingsTraktToPhlix(string $profileId): int
     {
         if (!$this->settings->isConfigured()) {
-            $this->logger->debug('TraktHistorySync: plugin not configured, skipping ratings Trakt→Phlix');
+            $this->logger->debug('Trakt history sync: plugin not configured, skipping ratings Trakt→Phlix');
             return 0;
         }
 
         if (!$this->settings->syncEnabled) {
-            $this->logger->debug('TraktHistorySync: sync disabled, skipping ratings Trakt→Phlix');
+            $this->logger->debug('Trakt history sync: sync disabled, skipping ratings Trakt→Phlix');
             return 0;
         }
 
@@ -873,7 +873,7 @@ class TraktHistorySync
             // credential is not a transient fetch failure.
             throw $e;
         } catch (TraktApiException $e) {
-            $this->logger->warning('TraktHistorySync: failed to fetch Trakt ratings', [
+            $this->logger->warning('Trakt history sync: failed to fetch Trakt ratings', [
                 'error' => $e->getMessage(),
             ]);
             return 0;
@@ -903,14 +903,14 @@ class TraktHistorySync
             if ($this->updateLocalRating($profileId, $mediaItemId, $ratingValue)) {
                 $updated++;
 
-                $this->logger->debug('TraktHistorySync: synced rating from Trakt', [
+                $this->logger->debug('Trakt history sync: synced rating from Trakt', [
                     'media_item_id' => $mediaItemId,
                     'rating' => $ratingValue,
                 ]);
             }
         }
 
-        $this->logger->info('TraktHistorySync: completed ratings Trakt→Phlix sync', [
+        $this->logger->info('Trakt history sync: completed ratings Trakt→Phlix sync', [
             'profile_id' => $profileId,
             'ratings_updated' => $updated,
         ]);
@@ -1023,7 +1023,7 @@ class TraktHistorySync
             // write: inventing an identity corrupts user data, and the old
             // watch_history rewrite corrupted it differently. Skip loudly
             // and let the caller withhold the count.
-            $this->logger->warning('TraktHistorySync: no user owns the sync profile; rating not persisted', [
+            $this->logger->warning('Trakt history sync: no user owns the sync profile; rating not persisted', [
                 'profile_id' => $profileId,
                 'media_item_id' => $mediaItemId,
             ]);
@@ -1046,7 +1046,7 @@ class TraktHistorySync
         // counts. Returning true over a false would let the sync report
         // ratings that never landed, and nothing would ever replay them.
         if ($result === false) {
-            $this->logger->warning('TraktHistorySync: rating write failed; not counted', [
+            $this->logger->warning('Trakt history sync: rating write failed; not counted', [
                 'media_item_id' => $mediaItemId,
             ]);
 
@@ -1102,18 +1102,18 @@ class TraktHistorySync
     public function syncRatingsPhlixToTrakt(string $mediaItemId, int $rating): bool
     {
         if (!$this->settings->isConfigured()) {
-            $this->logger->debug('TraktHistorySync: plugin not configured, skipping ratings Phlix→Trakt');
+            $this->logger->debug('Trakt history sync: plugin not configured, skipping ratings Phlix→Trakt');
             return false;
         }
 
         if (!$this->settings->syncEnabled) {
-            $this->logger->debug('TraktHistorySync: sync disabled, skipping ratings Phlix→Trakt');
+            $this->logger->debug('Trakt history sync: sync disabled, skipping ratings Phlix→Trakt');
             return false;
         }
 
         $existing = $this->watchHistory->getForMediaItem(TraktPlugin::DEFAULT_PROFILE_ID, $mediaItemId);
         if ($existing === null) {
-            $this->logger->debug('TraktHistorySync: no local history for item, skipping rating sync', [
+            $this->logger->debug('Trakt history sync: no local history for item, skipping rating sync', [
                 'media_item_id' => $mediaItemId,
             ]);
             return false;
@@ -1125,7 +1125,7 @@ class TraktHistorySync
 
             $this->api->addRating($item, $clampedRating, $this->settings->accessToken ?? '');
 
-            $this->logger->info('TraktHistorySync: pushed rating to Trakt', [
+            $this->logger->info('Trakt history sync: pushed rating to Trakt', [
                 'media_item_id' => $mediaItemId,
                 'rating' => $clampedRating,
             ]);
@@ -1138,7 +1138,7 @@ class TraktHistorySync
             // per-call false no one could act on.
             throw $e;
         } catch (TraktApiException $e) {
-            $this->logger->warning('TraktHistorySync: failed to push rating to Trakt', [
+            $this->logger->warning('Trakt history sync: failed to push rating to Trakt', [
                 'media_item_id' => $mediaItemId,
                 'error' => $e->getMessage(),
             ]);
